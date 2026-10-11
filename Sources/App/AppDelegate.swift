@@ -12,7 +12,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         NSApp.setActivationPolicy(.accessory)
         setUpStatusItem()
         // Metrics are sampled from launch so the Monitor has history when opened.
-        DispatchQueue.main.asyncAfter(deadline: .now() + 3) { _ = MonitorStore.shared }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 3) { _ = MonitorStore.shared; _ = WorkspaceStore.shared; _ = DevStore.shared }
         if !UserDefaults.standard.bool(forKey: "launchedBefore") {
             UserDefaults.standard.set(true, forKey: "launchedBefore")
             ControlCenterWindow.shared.show()

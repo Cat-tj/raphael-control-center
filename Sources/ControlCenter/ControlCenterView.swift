@@ -2,13 +2,20 @@ import SwiftUI
 import Charts
 
 enum CCSection: String, CaseIterable, Identifiable {
-    case dashboard, infra, monitor, apps, files, omniroute, agents, knowledge, chat
+    case overview, portfolio, mywork, projects, roadmap, activity
+    case monitor, infra, apps, files
+    case agents, omniroute, knowledge, chat
     var id: String { rawValue }
 
-    /// URL host → section (old names kept: overview, nodes).
+    /// URL host → section (old names kept: dashboard, overview, nodes).
     init(urlHost: String) {
         switch urlHost {
-        case "overview", "dashboard", "control": self = .dashboard
+        case "overview", "dashboard", "control", "home": self = .overview
+        case "portfolio", "portfolios": self = .portfolio
+        case "mywork", "my-work", "me": self = .mywork
+        case "projects", "project", "board": self = .projects
+        case "roadmap", "timeline": self = .roadmap
+        case "activity", "feed": self = .activity
         case "nodes", "infra", "tailscale": self = .infra
         case "apps", "websites": self = .apps
         case "monitor", "traffic", "metrics": self = .monitor
@@ -17,13 +24,18 @@ enum CCSection: String, CaseIterable, Identifiable {
         case "agents", "tokens": self = .agents
         case "chat": self = .chat
         case "knowledge", "graph", "soul", "env": self = .knowledge
-        default: self = .dashboard
+        default: self = CCSection(rawValue: urlHost) ?? .overview
         }
     }
 
     var title: String {
         switch self {
-        case .dashboard: "Dashboard"
+        case .overview: "Overview"
+        case .portfolio: "Portfolio"
+        case .mywork: "My Work"
+        case .projects: "Projects"
+        case .roadmap: "Roadmap"
+        case .activity: "Activity"
         case .infra: "Infrastruktur"
         case .apps: "Aplikasi & Website"
         case .monitor: "Monitor"
@@ -36,7 +48,12 @@ enum CCSection: String, CaseIterable, Identifiable {
     }
     var icon: String {
         switch self {
-        case .dashboard: "square.grid.2x2"
+        case .overview: "house"
+        case .portfolio: "square.grid.2x2"
+        case .mywork: "person.crop.circle.badge.checkmark"
+        case .projects: "folder.badge.gearshape"
+        case .roadmap: "calendar.day.timeline.left"
+        case .activity: "clock.arrow.circlepath"
         case .infra: "server.rack"
         case .apps: "app.connected.to.app.below.fill"
         case .monitor: "waveform.path.ecg.rectangle"
@@ -47,41 +64,63 @@ enum CCSection: String, CaseIterable, Identifiable {
         case .chat: "bubble.left.and.text.bubble.right"
         }
     }
+
+    /// Sidebar groups.
+    static let groups: [(String, [CCSection])] = [
+        ("WORKSPACE", [.overview, .portfolio, .mywork]),
+        ("DEVELOPMENT", [.projects, .roadmap, .activity]),
+        ("OPERATIONS", [.monitor, .infra, .apps, .files]),
+        ("INTELLIGENCE", [.agents, .omniroute, .knowledge, .chat]),
+    ]
+
+    /// Pages that manage their own scrolling.
+    var fullHeight: Bool { [.chat, .knowledge, .files, .projects, .portfolio].contains(self) }
 }
 
 struct ControlCenterView: View {
-    @AppStorage("raphaelCCSection") private var sectionRaw = CCSection.dashboard.rawValue
+    @AppStorage("raphaelCCSection") private var sectionRaw = CCSection.overview.rawValue
+    @AppStorage("raphaelSidebarCompact") private var compact = false
+    @AppStorage("raphaelSidebarCollapsed") private var collapsedRaw = ""
     @ObservedObject private var nodes = NodeStore.shared
     @ObservedObject private var stats = HermesStats.shared
     @ObservedObject private var agent = RaphaelAgent.shared
     @ObservedObject private var omni = OmniRouteStore.shared
     @ObservedObject private var sites = SiteStore.shared
     @ObservedObject private var device = DeviceContext.shared
+    @ObservedObject private var ws = WorkspaceStore.shared
+    @State private var palette = false
 
-    private var section: CCSection { CCSection(rawValue: sectionRaw) ?? .dashboard }
+    private var section: CCSection { CCSection(rawValue: sectionRaw) ?? .overview }
+    private var collapsed: Set<String> { Set(collapsedRaw.split(separator: ",").map(String.init)) }
 
     var body: some View {
         HStack(spacing: 0) {
             sidebar
             Rectangle().fill(RTheme.line).frame(width: 1)
             Group {
-                if section == .chat {
-                    ChatPage()
-                } else if section == .knowledge {
-                    KnowledgePage()
-                } else if section == .files {
-                    FilesPage()
+                if section.fullHeight {
+                    switch section {
+                    case .chat: ChatPage()
+                    case .knowledge: KnowledgePage()
+                    case .files: FilesPage()
+                    case .projects: ProjectsPage()
+                    case .portfolio: PortfolioPage()
+                    default: EmptyView()
+                    }
                 } else {
                     ScrollView {
                         Group {
                             switch section {
-                            case .dashboard: DashboardPage(go: { sectionRaw = $0.rawValue })
+                            case .overview: OverviewPage()
+                            case .mywork: MyWorkPage()
+                            case .roadmap: RoadmapPage(projectId: nil)
+                            case .activity: ActivityPage(projectId: nil)
                             case .infra: InfraPage()
                             case .apps: AppsPage()
                             case .monitor: MonitorPage()
                             case .omniroute: OmniRoutePage()
                             case .agents: AgentsPage()
-                            case .chat, .knowledge, .files: EmptyView()
+                            default: EmptyView()
                             }
                         }
                         .padding(.horizontal, 28).padding(.vertical, 26)
@@ -90,11 +129,23 @@ struct ControlCenterView: View {
                     }
                 }
             }
+            .frame(minWidth: 0, maxWidth: .infinity, maxHeight: .infinity)
+            .clipped()          // a too-wide page scrolls/clips; it never pushes the sidebar away
             .background(RTheme.canvas)
         }
         .frame(minWidth: 1000, minHeight: 640)
-        .onChange(of: device.currentId) { _, _ in if unavailable(section) != nil { sectionRaw = CCSection.dashboard.rawValue } }
+        .onChange(of: device.currentId) { _, _ in if unavailable(section) != nil { sectionRaw = CCSection.overview.rawValue } }
         .foregroundStyle(RTheme.navy)
+        .sheet(isPresented: $palette) { CommandPalette() }
+        .background {
+            Button("") { palette = true }.keyboardShortcut("k", modifiers: .command).hidden()
+            ForEach(Array(CCSection.groups.flatMap(\.1).prefix(9).enumerated()), id: \.offset) { i, s in
+                Button("") { sectionRaw = s.rawValue }.keyboardShortcut(KeyEquivalent(Character("\(i + 1)")), modifiers: .command).hidden()
+            }
+        }
+        .alert("Workspace", isPresented: Binding(get: { ws.lastError != nil }, set: { if !$0 { ws.lastError = nil } })) {
+            Button("OK") { ws.lastError = nil }
+        } message: { Text(ws.lastError ?? "") }
     }
 
     private var sidebar: some View {
@@ -105,43 +156,103 @@ struct ControlCenterView: View {
                     else { Image(systemName: "triangle.fill").foregroundStyle(RTheme.navy) }
                 }
                 .frame(width: 28, height: 28)
-                VStack(alignment: .leading, spacing: 0) {
-                    Text("RAPHAEL").font(.system(size: 15, weight: .heavy)).tracking(0.6)
-                    Text("Control Center").font(.system(size: 11)).foregroundStyle(RTheme.muted)
-                }
-            }
-            .padding(.horizontal, 12).padding(.top, 34).padding(.bottom, 22)
-
-            ForEach(CCSection.allCases) { s in
-                let why = unavailable(s)
-                Button { sectionRaw = s.rawValue } label: {
-                    HStack(spacing: 10) {
-                        Image(systemName: s.icon).font(.system(size: 13)).frame(width: 18)
-                        VStack(alignment: .leading, spacing: 0) {
-                            Text(s.title)
-                            if let why { Text(why).font(.system(size: 9.5)).foregroundStyle(RTheme.muted) }
-                        }
-                        Spacer()
-                        if why == nil { badge(for: s) }
+                if !compact {
+                    VStack(alignment: .leading, spacing: 0) {
+                        Text("RAPHAEL").font(.system(size: 15, weight: .heavy)).tracking(0.6)
+                        Text("Control Center").font(.system(size: 11)).foregroundStyle(RTheme.muted)
                     }
-                    .font(.system(size: 13, weight: section == s ? .semibold : .regular))
-                    .padding(.horizontal, 12).padding(.vertical, why == nil ? 8 : 5)
-                    .background(section == s ? RTheme.violetSoft : .clear, in: RoundedRectangle(cornerRadius: 10))
-                    .foregroundStyle(section == s ? RTheme.violet : RTheme.ink2)
-                    .opacity(why == nil ? 1 : 0.45)
-                    .contentShape(Rectangle())
+                    Spacer()
                 }
-                .buttonStyle(.plain)
-                .disabled(why != nil)
             }
-            Spacer()
-            DeviceSwitcher()
-            AppearancePicker()
-                .padding(.top, 6).padding(.bottom, 12)
+            .padding(.horizontal, compact ? 6 : 12).padding(.top, 34).padding(.bottom, 12)
+
+            Button { palette = true } label: {
+                HStack(spacing: 8) {
+                    Image(systemName: "magnifyingglass").frame(width: 18)
+                    if !compact { Text("Cari project, task…").foregroundStyle(RTheme.muted); Spacer(); Text("⌘K").font(.system(size: 10.5, design: .monospaced)).foregroundStyle(RTheme.muted) }
+                }
+                .font(.system(size: 12.5))
+                .padding(.horizontal, 10).padding(.vertical, 7)
+                .background(RTheme.canvas, in: RoundedRectangle(cornerRadius: 9))
+                .overlay(RoundedRectangle(cornerRadius: 9).stroke(RTheme.line))
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain).help("Cari project, task, milestone, halaman (⌘K)")
+            .padding(.bottom, 8)
+
+            ScrollView(showsIndicators: false) {
+                VStack(alignment: .leading, spacing: 1) {
+                    ForEach(CCSection.groups, id: \.0) { group in
+                        if !compact {
+                            Button { toggleGroup(group.0) } label: {
+                                HStack(spacing: 4) {
+                                    Text(group.0).font(.system(size: 10, weight: .semibold, design: .monospaced)).tracking(1.1)
+                                    Spacer()
+                                    Image(systemName: collapsed.contains(group.0) ? "chevron.right" : "chevron.down").font(.system(size: 8, weight: .bold))
+                                }
+                                .foregroundStyle(RTheme.muted)
+                                .padding(.horizontal, 12).padding(.top, 12).padding(.bottom, 4)
+                                .contentShape(Rectangle())
+                            }
+                            .buttonStyle(.plain)
+                        } else {
+                            Divider().overlay(RTheme.line).padding(.vertical, 6)
+                        }
+                        if compact || !collapsed.contains(group.0) {
+                            ForEach(group.1) { s in navRow(s) }
+                        }
+                    }
+                }
+            }
+            Spacer(minLength: 6)
+            if !compact {
+                DeviceSwitcher()
+                AppearancePicker().padding(.top, 6)
+            }
+            Button { withAnimation(.easeInOut(duration: 0.15)) { compact.toggle() } } label: {
+                Image(systemName: compact ? "sidebar.right" : "sidebar.left").font(.system(size: 12))
+                    .frame(maxWidth: .infinity, alignment: compact ? .center : .trailing).padding(.vertical, 8)
+            }
+            .buttonStyle(.plain).foregroundStyle(RTheme.muted).help(compact ? "Lebarkan sidebar" : "Sidebar ringkas")
+            .padding(.bottom, 6)
         }
-        .padding(.horizontal, 12)
-        .frame(width: 232)
+        .padding(.horizontal, compact ? 8 : 12)
+        .frame(width: compact ? 64 : 236)
         .background(RTheme.surface)
+    }
+
+    private func toggleGroup(_ g: String) {
+        var c = collapsed
+        if c.contains(g) { c.remove(g) } else { c.insert(g) }
+        collapsedRaw = c.sorted().joined(separator: ",")
+    }
+
+    private func navRow(_ s: CCSection) -> some View {
+        let why = unavailable(s)
+        return Button { sectionRaw = s.rawValue } label: {
+            HStack(spacing: 10) {
+                Image(systemName: s.icon).font(.system(size: 13)).frame(width: 18)
+                if !compact {
+                    VStack(alignment: .leading, spacing: 0) {
+                        Text(s.title)
+                        if let why { Text(why).font(.system(size: 9.5)).foregroundStyle(RTheme.muted) }
+                    }
+                    Spacer()
+                    if why == nil { badge(for: s) }
+                }
+            }
+            .font(.system(size: 13, weight: section == s ? .semibold : .regular))
+            .padding(.horizontal, compact ? 0 : 12).padding(.vertical, why == nil ? 7 : 5)
+            .frame(maxWidth: .infinity, alignment: compact ? .center : .leading)
+            .background(section == s ? RTheme.violetSoft : .clear, in: RoundedRectangle(cornerRadius: 9))
+            .foregroundStyle(section == s ? RTheme.violet : RTheme.ink2)
+            .opacity(why == nil ? 1 : 0.45)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .disabled(why != nil)
+        .help(s.title + (why.map { " · \($0)" } ?? ""))
+        .accessibilityLabel(s.title)
     }
 
     /// Why a section does not apply to the chosen device (nil = available).
@@ -173,6 +284,12 @@ struct ControlCenterView: View {
         case .monitor:
             let bad = MonitorStore.shared.alerts(for: device.scope, sites: device.isAll).filter { $0.level == .bad }.count
             if bad > 0 { count(bad, RTheme.red) }
+        case .mywork:
+            let overdue = ws.tasks.filter { $0.assignee == ws.me && $0.isOverdue() }.count
+            if overdue > 0 { count(overdue, RTheme.red) }
+        case .projects:
+            let blocked = ws.tasks.filter { $0.blocked && $0.status != .done && !$0.archived }.count
+            if blocked > 0 { count(blocked, RTheme.amber) }
         default: EmptyView()
         }
     }

@@ -80,6 +80,7 @@ struct MDetail: Equatable {
     var rebootRequired = false
     var tunnel: MTunnel?
     var services: [MService] = []
+    var jobs: [MJob] = []
     var routes: [MRoute] = []
     var listen: [Int: (name: String, pid: Int)] = [:]
     var ips: [String] = []
@@ -155,6 +156,7 @@ final class MonitorStore: ObservableObject {
             }
         }
         rebuildCatalog()
+        MonitorTransitions.record()       // project-linked resources going down / recovering → activity
         if Date().timeIntervalSince(lastSiteCheck) > 55 {
             lastSiteCheck = Date()
             SiteStore.shared.extra = AppCatalog.checkURLs(apps)
@@ -270,6 +272,8 @@ final class MonitorStore: ObservableObject {
         }.sorted { ($0.healthy ? 1 : 0, -$0.cpu) < ($1.healthy ? 1 : 0, -$1.cpu) }
         d.failed = j["failed"] as? [String] ?? []
         d.ips = j["ips"] as? [String] ?? []
+        let tz = (j["tz"] as? NSNumber)?.intValue ?? TimeZone.current.secondsFromGMT()
+        d.jobs = ((j["jobs"] as? [[String: Any]]) ?? []).map { MJob.parse($0, tz: tz) }
         d.services = ((j["services"] as? [[String: Any]]) ?? []).map { v in
             MService(unit: v["unit"] as? String ?? "", user: v["user"] as? Bool ?? false, state: v["state"] as? String ?? "",
                      sub: v["sub"] as? String ?? "", mem: (v["mem"] as? NSNumber)?.doubleValue ?? 0,
@@ -339,6 +343,13 @@ final class MonitorStore: ObservableObject {
             for c in d.containers where !c.healthy { out.append(MAlert(node: n.name, level: .bad, icon: "shippingbox", text: "Container \(c.name): \(c.status)")) }
             for c in d.containers where c.restarts > 3 { out.append(MAlert(node: n.name, level: .warn, icon: "arrow.clockwise", text: "Container \(c.name) restart \(c.restarts)×")) }
             for f in d.failed { out.append(MAlert(node: n.name, level: .bad, icon: "xmark.octagon", text: "Service gagal: \(f)")) }
+            for job in d.jobs where !job.system || job.health == .failed {
+                switch job.health {
+                case .failed: out.append(MAlert(node: n.name, level: .bad, icon: "clock.badge.xmark", text: "Job \(job.name) gagal\(job.detail.isEmpty ? "" : ": \(job.detail)")"))
+                case .missed: out.append(MAlert(node: n.name, level: .warn, icon: "clock.badge.exclamationmark", text: "Job \(job.name) tidak jalan sesuai jadwal (\(job.scheduleText))"))
+                default: break
+                }
+            }
             if let u = d.securityUpdates, u > 0 { out.append(MAlert(node: n.name, level: .warn, icon: "lock.shield", text: "\(u) update keamanan tertunda")) }
             else if let u = d.updates, u > 20 { out.append(MAlert(node: n.name, level: .info, icon: "arrow.down.circle", text: "\(u) update paket tertunda")) }
             if d.rebootRequired { out.append(MAlert(node: n.name, level: .info, icon: "restart", text: "Perlu reboot untuk menyelesaikan update")) }
@@ -521,6 +532,92 @@ final class MonitorStore: ObservableObject {
             if t[0] == 'root' and len(t) > 1: cur["root"] = t[-1]
         depth += line.count('{') - line.count('}')
     o["caddy"] = routes
+    # ── Scheduled jobs: cron, systemd timers, Hermes cron ─────────────────
+    jobs = []
+    o["tz"] = time.localtime().tm_gmtoff
+    sysnames = ('e2scrub', 'sysstat', 'debian-sa1', 'run-parts', 'popularity-contest', 'apt', 'anacron', 'logrotate', 'man-db', 'dpkg')
+    cron_runs = {}
+    for l in sh("sudo -n journalctl -u cron -u crond --since '-26h' -o short-unix --no-pager 2>/dev/null | grep ' CMD ('", 15).splitlines():
+        m = re.match(r'([0-9.]+) .*CMD \((.*)\)\s*$', l)
+        if m: cron_runs[m.group(2).strip()] = float(m.group(1))
+    def cron_lines(text, src, has_user):
+        for raw in text.splitlines():
+            line = raw.strip()
+            if not line or line.startswith('#') or re.match(r'^[A-Za-z_][A-Za-z0-9_]*\s*=', line): continue
+            parts = line.split()
+            if parts[0].startswith('@'): expr, rest = parts[0], parts[1:]
+            elif len(parts) >= 6: expr, rest = ' '.join(parts[:5]), parts[5:]
+            else: continue
+            user = rest[0] if has_user and rest else src.split(':')[0]
+            cmd = ' '.join(rest[1:] if has_user else rest)
+            if not cmd: continue
+            seg = re.split(r'\|\||&&|;', re.sub(r'[12]?>>?\s*\S+|2>&1', '', cmd))[-1].split()
+            name = os.path.basename(seg[0]) if seg else cmd[:40]
+            if name in ('run-parts',) and len(seg) > 1: name = 'run-parts ' + os.path.basename(seg[-1])
+            import hashlib
+            j = {"kind": "cron", "id": "cron:" + src + ":" + hashlib.sha1((expr + cmd).encode()).hexdigest()[:10], "name": name[:60],
+                 "expr": expr, "user": user, "command": cmd[:300], "source": src, "enabled": True,
+                 "system": any(n in cmd for n in sysnames) or any(n in src for n in ('e2scrub', 'sysstat'))}
+            if cmd in cron_runs: j["last"] = cron_runs[cmd]
+            lm = re.search(r'>>?\s*(/[^\s;|&]+)', cmd)
+            if lm:
+                log = lm.group(1); j["log"] = log
+                tail = sh(f"sudo -n tail -n 6 {log} 2>/dev/null || tail -n 6 {log} 2>/dev/null").strip().splitlines()
+                try: j["logModified"] = os.path.getmtime(log)
+                except Exception:
+                    st = sh(f"sudo -n stat -c %Y {log} 2>/dev/null").strip()
+                    if st.isdigit(): j["logModified"] = float(st)
+                if tail:
+                    lines = [x.strip() for x in tail if x.strip()]
+                    bad = [x for x in lines[-4:] if re.search(r'error|fail|fatal|refused|denied|traceback|exception', x, re.I)]
+                    j["detail"] = (bad[0] if bad else (lines[-1] if lines else ''))[:240]
+                    j["status"] = "failed" if bad else "ok"
+            jobs.append(j)
+    cron_lines(sh('crontab -l 2>/dev/null'), os.environ.get('USER', 'user') + ':crontab', False)
+    cron_lines(sh('sudo -n crontab -l 2>/dev/null'), 'root:crontab', False)
+    try: cron_lines(open('/etc/crontab').read(), 'etc:crontab', True)
+    except Exception: pass
+    for f in sorted(os.listdir('/etc/cron.d')) if os.path.isdir('/etc/cron.d') else []:
+        try: cron_lines(open('/etc/cron.d/' + f).read(), 'cron.d:' + f, True)
+        except Exception: pass
+    for scope in ('', '--user'):
+        try: timers = json.loads(sh(f'systemctl {scope} list-timers --all --no-pager --output=json 2>/dev/null') or '[]')
+        except Exception: timers = []
+        for t in timers:
+            svc = t.get('activates') or ''
+            props = dict(l.split('=', 1) for l in sh(f'systemctl {scope} show {svc} -p Result,ExecMainStatus,ExecMainExitTimestamp,ActiveState,FragmentPath,Description --timestamp=unix').splitlines() if '=' in l)
+            frag = props.get('FragmentPath', '')
+            ts = lambda v: (v / 1e6) if isinstance(v, (int, float)) and v > 0 else None
+            exit_ts = props.get('ExecMainExitTimestamp', '').lstrip('@')
+            j = {"kind": "timer", "id": f"timer:{scope or 'system'}:{t.get('unit')}", "name": (t.get('unit') or '').replace('.timer', ''), "unit": t.get('unit'),
+                 "service": svc, "command": props.get('Description', ''), "user": 'user' if scope else 'root', "enabled": True,
+                 "next": ts(t.get('next')), "last": ts(t.get('last')) or (float(exit_ts) if exit_ts.replace('.', '').isdigit() else None),
+                 "status": "running" if props.get('ActiveState') == 'activating' else ("ok" if props.get('Result') == 'success' and props.get('ExecMainStatus', '0') == '0' else ("failed" if props.get('Result') not in (None, '', 'success') or props.get('ExecMainStatus', '0') not in ('0', '') else "")),
+                 "detail": "" if props.get('Result') in (None, '', 'success') else f"Result={props.get('Result')} exit={props.get('ExecMainStatus')}",
+                 "system": frag.startswith(('/lib/', '/usr/lib/')) or any(n in (t.get('unit') or '') for n in sysnames + ('fstrim', 'zram', 'tmpfiles'))}
+            jobs.append(j)
+    for home in [os.path.expanduser('~/.hermes')] + [os.path.join(os.path.expanduser('~/.hermes/profiles'), d) for d in (os.listdir(os.path.expanduser('~/.hermes/profiles')) if os.path.isdir(os.path.expanduser('~/.hermes/profiles')) else [])]:
+        jf = os.path.join(home, 'cron', 'jobs.json')
+        if not os.path.exists(jf): continue
+        try: data = json.load(open(jf))
+        except Exception: continue
+        hist = {}
+        try:
+            import sqlite3
+            c = sqlite3.connect('file:' + os.path.join(home, 'cron', 'executions.db') + '?mode=ro', uri=True)
+            for job_id, status, started, finished, err in c.execute("SELECT job_id, status, started_at, finished_at, substr(COALESCE(error,''),1,200) FROM executions ORDER BY started_at DESC LIMIT 300"):
+                hist.setdefault(job_id, [])
+                if len(hist[job_id]) < 8: hist[job_id].append([started, finished, status, err])
+        except Exception: pass
+        profile = 'default' if home.endswith('.hermes') else os.path.basename(home)
+        for jb in data.get('jobs', []) if isinstance(data, dict) else data:
+            sch = jb.get('schedule') or {}
+            jobs.append({"kind": "hermes", "id": f"hermes:{profile}:{jb.get('id')}", "name": jb.get('name') or jb.get('id'), "profile": profile,
+                         "expr": sch.get('expr') or '', "schedule": jb.get('schedule_display') or sch.get('display') or '', "enabled": bool(jb.get('enabled', True)) and not jb.get('paused_at'),
+                         "state": jb.get('state') or '', "nextISO": jb.get('next_run_at'), "lastISO": jb.get('last_run_at'), "status": {"ok": "ok", "success": "ok", "completed": "ok", "failed": "failed", "error": "failed"}.get(str(jb.get('last_status') or '').lower(), str(jb.get('last_status') or '')),
+                         "detail": (jb.get('last_error') or jb.get('last_delivery_error') or '')[:240], "failureStreak": jb.get('failure_streak') or 0,
+                         "workdir": jb.get('workdir') or '', "history": hist.get(jb.get('id'), []), "system": False})
+    o["jobs"] = jobs
     o["failed"] = [l.split()[0] for l in sh("systemctl --failed --no-legend --plain 2>/dev/null; systemctl --user --failed --no-legend --plain 2>/dev/null").splitlines() if l.strip()]
     # cloudflared tunnel metrics (Prometheus endpoint on localhost)
     if 'cloudflared' in sh('ps -eo comm'):
@@ -570,7 +667,7 @@ final class MonitorStore: ObservableObject {
     /// macOS: same fields where they exist.
     nonisolated static let macScript = #"""
     /usr/bin/python3 - <<'RAPHAEL_PY'
-    import json, os, re, subprocess, shutil
+    import json, os, re, subprocess, shutil, time
     def sh(c, t=8):
         try: return subprocess.run(c, shell=True, capture_output=True, text=True, timeout=t).stdout
         except Exception: return ""
@@ -607,6 +704,30 @@ final class MonitorStore: ObservableObject {
                 out.append(row)
         return out[:5]
     o["topCPU"], o["topMem"] = top('-r'), top('-m')
+    jobs = []
+    o["tz"] = time.localtime().tm_gmtoff
+    for raw in sh('crontab -l 2>/dev/null').splitlines():
+        line = raw.strip()
+        if not line or line.startswith('#') or re.match(r'^[A-Za-z_][A-Za-z0-9_]*\s*=', line): continue
+        p = line.split()
+        expr, rest = (p[0], p[1:]) if p[0].startswith('@') else (' '.join(p[:5]), p[5:])
+        import hashlib
+        if rest: jobs.append({"kind": "cron", "id": "cron:user:" + hashlib.sha1(line.encode()).hexdigest()[:10], "name": os.path.basename(rest[0])[:60], "expr": expr, "command": ' '.join(rest)[:300], "user": os.environ.get('USER', ''), "enabled": True, "system": False})
+    import plistlib, glob
+    for f in sorted(glob.glob(os.path.expanduser('~/Library/LaunchAgents/*.plist'))):
+        try: pl = plistlib.load(open(f, 'rb'))
+        except Exception: continue
+        sched = pl.get('StartCalendarInterval'); interval = pl.get('StartInterval')
+        if not sched and not interval: continue
+        label = pl.get('Label', os.path.basename(f))
+        info = sh(f'launchctl list {label} 2>/dev/null')
+        m = re.search(r'"LastExitStatus" = (-?\d+);', info)
+        code = int(m.group(1)) if m else None
+        disp = f"tiap {interval // 3600} jam" if interval and interval % 3600 == 0 else (f"tiap {interval // 60} menit" if interval else json.dumps(sched))
+        jobs.append({"kind": "launchd", "id": "launchd:" + label, "name": label, "schedule": disp, "command": ' '.join(pl.get('ProgramArguments', []) or [pl.get('Program', '')])[:300],
+                     "enabled": not pl.get('Disabled', False), "loaded": bool(info), "status": "" if code is None else ("ok" if code == 0 else "failed"),
+                     "detail": "" if not code else f"exit {code}", "system": label.startswith(('com.apple', 'com.google', 'com.microsoft', 'us.zoom'))})
+    o["jobs"] = jobs
     if __SLOW__:
         sp = sh('system_profiler SPHardwareDataType', 15)
         g = lambda k: (re.search(k + r':\s*(.+)', sp) or [None, None])[1]

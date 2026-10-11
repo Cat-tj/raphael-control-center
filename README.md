@@ -11,6 +11,11 @@ SwiftUI + AppKit, no third-party dependencies, no telemetry. Secrets stay in the
 
 | Page | What it does |
 |---|---|
+| **Overview** | Which projects need attention and the next action for each, my next tasks, delivery insights, operations summary. |
+| **Portfolio** | Portfolios with projects as grid, list or lifecycle Kanban (Idea → Archived, Paused flag); project discovery from ~/Projects, GitHub, Vercel and the Monitor. |
+| **My Work** | Tasks assigned to me across projects, by due date. |
+| **Projects** | Per-project workspace: Overview, Board (drag & drop Kanban, WIP limits, keyboard), Tasks, Roadmap, Development (GitHub), Deployments (Vercel/servers), Monitoring (health), Activity, Settings. |
+| **Roadmap / Activity** | Timeline of milestones, epics and due dates; unified, de-duplicated activity feed. |
 | **Dashboard** | One-screen summary of the chosen device (or all of them). |
 | **Infrastruktur** | Devices, health, Tailscale peers, actions (restart, reboot, terminal), a command runner. |
 | **Monitor** | Live + 24 h metrics per device (CPU, RAM, disk, network, temperature/throttling), Docker containers, custom services, pending/security updates, failed SSH logins. **Apps are discovered and watched on their own** — Docker compose projects, systemd services, Caddy sites (followed through the reverse proxy to what answers behind it), Vercel projects, n8n instances, websites and `~/Projects` (git state, running dev servers), linked to their GitHub repo and CI — and grouped Server / Cloud / Lokal and Berjalan / Bermasalah / Tidak berjalan. Website traffic comes from cloudflared metrics and Cloudflare Analytics; websites get uptime, response time and TLS expiry. |
@@ -23,6 +28,8 @@ SwiftUI + AppKit, no third-party dependencies, no telemetry. Secrets stay in the
 
 Every page follows the device switcher at the bottom of the sidebar: **Semua device** or one device.
 
+Portfolio and project data is local SQLite — see [docs/WORKSPACE.md](docs/WORKSPACE.md).
+
 ## Build
 
 Needs macOS 14+ and the Xcode command line tools (`xcode-select --install`). No Xcode project.
@@ -30,6 +37,7 @@ Needs macOS 14+ and the Xcode command line tools (`xcode-select --install`). No 
 ```bash
 scripts/build.sh            # → build/Raphael Control Center.app
 scripts/build.sh --install  # → ~/Applications, then opens it
+scripts/test.sh             # workspace tests (no Xcode needed)
 ```
 
 Optional: create a code-signing certificate named **Raphael Local** (Keychain Access →

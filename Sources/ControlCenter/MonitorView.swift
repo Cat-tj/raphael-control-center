@@ -4,7 +4,7 @@ import Charts
 /// Monitor, in four tabs: Ringkasan (what needs attention), Aplikasi (every app on its
 /// own: server, cloud, local), Server (metrics per device) and Traffic (websites).
 struct MonitorPage: View {
-    enum Tab: String, CaseIterable { case summary = "Ringkasan", apps = "Aplikasi", servers = "Server", traffic = "Traffic" }
+    enum Tab: String, CaseIterable { case summary = "Ringkasan", apps = "Aplikasi", servers = "Server", jobs = "Jobs", traffic = "Traffic" }
     @ObservedObject var mon = MonitorStore.shared
     @ObservedObject var device = DeviceContext.shared
     @ObservedObject var nodes = NodeStore.shared
@@ -73,6 +73,7 @@ struct MonitorPage: View {
             case .summary: summary(apps, statuses)
             case .apps: appsTab(apps, statuses)
             case .servers: serversTab
+            case .jobs: JobsTab(scope: scope)
             case .traffic: trafficTab
             }
         }
@@ -100,6 +101,9 @@ struct MonitorPage: View {
         switch t {
         case .summary: return mon.alerts(for: scope, sites: device.isAll).filter { $0.level == .bad }.count
         case .apps: return apps.filter { $0.location != .local && [.issue, .stopped].contains(statuses[$0.id]?.run ?? .unknown) }.count
+        case .jobs:
+            let jobs: [MJob] = scope.flatMap { (n: RNode) -> [MJob] in mon.detail[n.id]?.jobs ?? [] }
+            return jobs.filter { (j: MJob) -> Bool in j.health == .failed || (j.health == .missed && !j.system) }.count
         default: return nil
         }
     }
@@ -178,6 +182,7 @@ struct MonitorPage: View {
         ("Daya & suhu", "bolt.fill", ["thermometer.high", "bolt.trianglebadge.exclamationmark"]),
         ("Resource", "cpu", ["internaldrive", "memorychip", "gauge.high"]),
         ("Layanan", "shippingbox", ["shippingbox", "xmark.octagon", "arrow.clockwise", "bolt.horizontal.circle"]),
+        ("Cron & job", "clock", ["clock.badge.xmark", "clock.badge.exclamationmark"]),
         ("Keamanan", "lock.shield", ["lock.shield", "person.badge.shield.checkmark", "restart", "arrow.down.circle"]),
         ("Website & traffic", "globe", ["globe", "lock.trianglebadge.exclamationmark", "network.slash", "chart.line.uptrend.xyaxis"]),
     ]

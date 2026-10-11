@@ -23,7 +23,7 @@ ARCH=$(uname -m)
 echo "▸ compiling ($CONFIG, $ARCH)"
 swiftc -swift-version 5 "${OPT[@]}" -sdk "$SDK" -target "$ARCH-apple-macos14.0" \
   -module-name RaphaelControlCenter \
-  Sources/App/*.swift Sources/ControlCenter/*.swift \
+  Sources/App/*.swift Sources/ControlCenter/*.swift Sources/Workspace/*.swift Sources/WorkspaceUI/*.swift \
   -o "$APP/Contents/MacOS/$EXE" 2>&1 | grep -E ": error:" || true
 [ -x "$APP/Contents/MacOS/$EXE" ] || { echo "✗ build failed"; exit 1; }
 
