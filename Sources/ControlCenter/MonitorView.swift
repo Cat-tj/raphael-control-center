@@ -603,8 +603,15 @@ struct MonitorPage: View {
         switch cf.state {
         case .noToken, .noPermission:
             VStack(alignment: .leading, spacing: 8) {
-                Text(cf.state == .noToken ? "Belum ada token Cloudflare." : "Token Cloudflare yang ada (di Hermes) tidak punya izin Analytics.")
+                Text(cf.state == .noToken ? "Belum ada token Cloudflare." : "Token Cloudflare yang ditemukan tidak punya izin Analytics.")
                     .font(.system(size: 12.5, weight: .semibold))
+                if !cf.tried.isEmpty {
+                    VStack(alignment: .leading, spacing: 2) {
+                        ForEach(Array(cf.tried.enumerated()), id: \.offset) { _, t in
+                            Text("• \(t.source): \(t.result)").font(.system(size: 11, design: .monospaced)).foregroundStyle(RTheme.muted)
+                        }
+                    }
+                }
                 Text("Buat token di dash.cloudflare.com → My Profile → API Tokens → Create Token → template \"Read analytics and logs\" (Zone · Analytics · Read, semua zone). Tempel di sini; disimpan di Keychain.")
                     .font(.system(size: 12)).foregroundStyle(RTheme.muted).fixedSize(horizontal: false, vertical: true)
                 HStack {

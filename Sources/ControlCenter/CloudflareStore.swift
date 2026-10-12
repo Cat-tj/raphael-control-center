@@ -30,7 +30,7 @@ struct CFZone: Identifiable, Hashable {
 
 /// Website traffic from Cloudflare's GraphQL Analytics API (7 days, per zone).
 /// Token: Keychain "cloudflare-analytics-token", else CLOUDFLARE_API_TOKEN from the
-/// primary Hermes device's .env. It needs the "Zone · Analytics · Read" permission.
+/// primary Hermes device's .env (CLOUDFLARE_API_TOKEN_FULL, …, CLOUDFLARE_API_TOKEN). It needs the "Zone · Analytics · Read" permission.
 @MainActor
 final class CloudflareStore: ObservableObject {
     static let shared = CloudflareStore()
@@ -39,6 +39,8 @@ final class CloudflareStore: ObservableObject {
     @Published private(set) var zones: [CFZone] = []
     @Published private(set) var state: State = .idle
     @Published private(set) var loadedAt: Date?
+    /// Which token sources were tried and what each gave (names only, never values).
+    @Published private(set) var tried: [(source: String, result: String)] = []
 
     static let keychainKey = "cloudflare-analytics-token"
 
@@ -51,28 +53,56 @@ final class CloudflareStore: ObservableObject {
         guard state != .loading else { return }
         state = .loading
         Task {
-            let token = await Self.token()
-            guard let token, !token.isEmpty else { state = .noToken; return }
-            do {
-                let zones = try await Self.load(token: token)
-                self.zones = zones
-                state = .ok
-                loadedAt = Date()
-            } catch CFError.permission {
-                state = .noPermission
-            } catch {
-                state = .error(error.localizedDescription)
+            let tokens = await Self.tokens()
+            guard !tokens.isEmpty else { tried = []; state = .noToken; return }
+            var result: State = .noPermission, log: [(String, String)] = []
+            for (source, token) in tokens {  // first token with Analytics permission wins
+                if token.range(of: "^[0-9a-f]{37}$", options: .regularExpression) != nil {
+                    log.append((source, "Global API Key — tidak didukung, buat API Token")); continue
+                }
+                do {
+                    zones = try await Self.load(token: token)
+                    loadedAt = Date()
+                    log.append((source, "OK · \(zones.count) zone"))
+                    result = .ok
+                    break
+                } catch CFError.permission {
+                    log.append((source, "tidak punya izin Analytics / Zone Read"))
+                } catch {
+                    log.append((source, error.localizedDescription))
+                    result = .error(error.localizedDescription)
+                }
             }
+            tried = log
+            if result != .ok, log.contains(where: { $0.1.hasPrefix("tidak punya") }) { result = .noPermission }
+            state = result
         }
     }
 
     enum CFError: Error { case permission, api(String) }
 
-    private static func token() async -> String? {
-        if let t = KeychainStore.shared.get(keychainKey), !t.isEmpty { return t }
-        let node = NodeStore.shared.nodes.first { $0.id == DeviceContext.primaryHermesId } ?? DeviceContext.shared.current
-        let env = await DeviceContext.readFile(node, node.isLocal ? HermesConfig.home.appendingPathComponent(".env").path : "~/.hermes/.env")
-        return HermesConfig.parseEnv(env)["CLOUDFLARE_API_TOKEN"]
+    /// Env names checked in the primary Hermes device's .env, most specific first.
+    static let envKeys = ["CLOUDFLARE_API_TOKEN_FULL", "CF_API_TOKEN_FULL", "API_TOKEN_FULL", "CLOUDFLARE_ANALYTICS_TOKEN",
+                          "CLOUDFLARE_API_TOKEN", "CF_API_TOKEN"]
+
+    /// Keychain first, then the Raphael (Hermes) .env on the primary Hermes device and on this Mac.
+    private static func tokens() async -> [(String, String)] {
+        var out: [(String, String)] = []
+        if let t = KeychainStore.shared.get(keychainKey), !t.isEmpty { out.append(("Keychain", t)) }
+        var nodes: [RNode] = []
+        if let p = NodeStore.shared.nodes.first(where: { $0.id == DeviceContext.primaryHermesId }) { nodes.append(p) }
+        if let local = NodeStore.shared.nodes.first(where: \.isLocal), !nodes.contains(where: { $0.id == local.id }) { nodes.append(local) }
+        if nodes.isEmpty { nodes.append(DeviceContext.shared.current) }
+        for node in nodes {
+            let env = HermesConfig.parseEnv(await DeviceContext.readFile(node, node.isLocal ? HermesConfig.home.appendingPathComponent(".env").path : "~/.hermes/.env"))
+            let byName = Dictionary(env.map { ($0.key.trimmingCharacters(in: .whitespaces).uppercased().replacingOccurrences(of: " ", with: "_"), $0.value) }, uniquingKeysWith: { a, _ in a })
+            // Known names first, then any other "…TOKEN…FULL…" / Cloudflare-looking name.
+            let extra = byName.keys.filter { k in !envKeys.contains(k) && ((k.contains("TOKEN") && k.contains("FULL")) || k.contains("CLOUDFLARE") || k.hasPrefix("CF_")) }.sorted()
+            for k in envKeys + extra {
+                if let t = byName[k]?.trimmingCharacters(in: .whitespacesAndNewlines), !t.isEmpty, !out.contains(where: { $0.1 == t }) { out.append(("\(node.name) · \(k)", t)) }
+            }
+        }
+        return out
     }
 
     private static func call(_ token: String, _ path: String, body: [String: Any]? = nil) async throws -> [String: Any] {
@@ -87,6 +117,8 @@ final class CloudflareStore: ObservableObject {
         guard let j = try JSONSerialization.jsonObject(with: data) as? [String: Any] else { throw CFError.api("respons tidak valid") }
         if let errs = j["errors"] as? [[String: Any]], !errs.isEmpty {
             let msg = errs.compactMap { $0["message"] as? String }.joined(separator: "; ")
+            let code = (errs.first?["code"] as? NSNumber)?.intValue ?? 0
+            if code == 10000 || code == 9109 || msg.localizedCaseInsensitiveContains("authentication error") { throw CFError.permission }
             if msg.contains("permission") || msg.contains("authz") || (errs.first?["extensions"] as? [String: Any])?["code"] as? String == "authz" { throw CFError.permission }
             if j["data"] == nil || j["data"] is NSNull { throw CFError.api(msg) }
         }
