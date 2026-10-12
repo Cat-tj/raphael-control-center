@@ -149,7 +149,7 @@ final class DeviceContext: ObservableObject {
     }
 
     nonisolated static func pyString(_ s: String) -> String {
-        let data = try? JSONSerialization.data(withJSONObject: [s])
+        let data = try? JSONSerialization.data(withJSONObject: [s], options: [.withoutEscapingSlashes])
         let json = data.flatMap { String(data: $0, encoding: .utf8) } ?? "[\"\"]"
         return String(json.dropFirst().dropLast())   // a JSON string literal is a valid Python literal
     }
