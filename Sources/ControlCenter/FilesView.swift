@@ -100,7 +100,7 @@ struct FilesPage: View {
                 ForEach(bookmarks, id: \.self) { b in Button(b) { go(b) } }
             } label: { Label("Lokasi", systemImage: "bookmark") }
                 .menuStyle(.borderlessButton).fixedSize()
-            TextField("Path", text: $pathDraft).textFieldStyle(.roundedBorder).font(.system(size: 12, design: .monospaced))
+            TextField("Path", text: $pathDraft).textFieldStyle(.roundedBorder).font(.system(size: 12.5))
                 .onSubmit { go(pathDraft) }
             TextField("Filter", text: $filter).textFieldStyle(.roundedBorder).frame(width: 140)
             Toggle("Tersembunyi", isOn: $showHidden).toggleStyle(.checkbox).font(.system(size: 12))

@@ -540,7 +540,8 @@ struct EnvEditor: View {
                     }
                     .buttonStyle(RPillButton()).disabled(newKey.isEmpty)
                 }
-                .font(.system(size: 12, design: .monospaced))
+                // Not monospaced: SF Mono's underscore sits below the field's line box and gets clipped.
+                .font(.system(size: 12.5))
                 .padding(.top, 6)
                 Text("Disimpan langsung ke file dengan izin aslinya (biasanya 600). Salinan sebelumnya: .env.raphael.bak. Restart agent supaya perubahan terbaca.")
                     .font(.system(size: 11)).foregroundStyle(RTheme.muted)
