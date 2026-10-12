@@ -108,7 +108,14 @@ final class DeviceContext: ObservableObject {
 
     /// Writes with a rolling `.raphael.bak` copy and the original permissions (local or remote).
     nonisolated static func writeFile(_ node: RNode, _ path: String, _ text: String) async -> Bool {
-        if node.isLocal { return KnowledgeStore.write(text, to: URL(fileURLWithPath: (path as NSString).expandingTildeInPath)) }
+        await writeFileResult(node, path, text) == nil
+    }
+
+    /// nil on success, else a short reason (SSH error, Python exception…). Retries once when SSH itself fails.
+    nonisolated static func writeFileResult(_ node: RNode, _ path: String, _ text: String) async -> String? {
+        if node.isLocal {
+            return KnowledgeStore.write(text, to: URL(fileURLWithPath: (path as NSString).expandingTildeInPath)) ? nil : "tidak bisa menulis \(path)"
+        }
         let b64 = Data(text.utf8).base64EncodedString()
         let py = """
         import base64, os, shutil, stat, sys
@@ -119,8 +126,13 @@ final class DeviceContext: ObservableObject {
         with open(tmp, 'wb') as f: f.write(base64.b64decode('\(b64)'))
         os.chmod(tmp, mode); os.replace(tmp, p); print('OK')
         """
-        let r = await run(node, "python3 - <<'RAPHAEL_PY'\n\(py)\nRAPHAEL_PY", timeout: 30)
-        return r.output.contains("OK")
+        let script = "python3 - <<'RAPHAEL_PY'\n\(py)\nRAPHAEL_PY"
+        var r = await run(node, script, timeout: 30)
+        if r.exitCode == 255 || r.exitCode == 15 { r = await run(node, script, timeout: 45) }   // SSH dropped / timed out
+        if r.output.contains("OK") { return nil }
+        let lines = r.output.split(separator: "\n").map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty }
+        if r.exitCode == 15 { return "timeout ke \(node.name)" }
+        return lines.last.map { String($0.prefix(160)) } ?? "\(node.name) tidak menjawab (exit \(r.exitCode))"
     }
 
     nonisolated static func listDir(_ node: RNode, _ path: String) async -> [String] {

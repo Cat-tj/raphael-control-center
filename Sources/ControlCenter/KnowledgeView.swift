@@ -434,7 +434,7 @@ struct FilesEditor: View {
                     Spacer()
                     RChip(text: "±\((text.count / 4).compact) token", tint: text.count / 4 > 4_000 ? RTheme.amber : RTheme.ink2)
                     if busy { ProgressView().controlSize(.small) }
-                    if let status { Text(status).font(.system(size: 11)).foregroundStyle(RTheme.green) }
+                    if let status { Text(status).font(.system(size: 11)).foregroundStyle(status.hasPrefix("Gagal") ? RTheme.red : status.hasSuffix("…") ? RTheme.muted : RTheme.green).lineLimit(2).help(status) }
                     Button("Simpan") { save() }.buttonStyle(RPillButton(primary: true)).disabled(text == saved || busy)
                 }
                 TextEditor(text: $text)
@@ -496,7 +496,7 @@ struct EnvEditor: View {
                     Text("\(node.name) · " + path.replacingOccurrences(of: FileManager.default.homeDirectoryForCurrentUser.path, with: "~"))
                         .font(.system(size: 12, design: .monospaced)).foregroundStyle(RTheme.muted)
                     Spacer()
-                    if let status { Text(status).font(.system(size: 11)).foregroundStyle(RTheme.green) }
+                    if let status { Text(status).font(.system(size: 11)).foregroundStyle(status.hasPrefix("Gagal") ? RTheme.red : status.hasSuffix("…") ? RTheme.muted : RTheme.green).lineLimit(2).help(status) }
                     Button(revealed.count == keyed.count && !keyed.isEmpty ? "Sembunyikan semua" : "Tampilkan semua") {
                         revealed = revealed.count == keyed.count ? [] : Set(keyed.map(\.id))
                     }
@@ -571,7 +571,8 @@ struct EnvEditor: View {
     private func save() {
         let text = EnvLine.render(lines)
         Task {
-            if await DeviceContext.writeFile(node, path, text) { original = text; status = "Tersimpan" } else { status = "Gagal menyimpan" }
+            status = "Menyimpan…"
+            if let err = await DeviceContext.writeFileResult(node, path, text) { status = "Gagal menyimpan: \(err)" } else { original = text; status = "Tersimpan" }
         }
     }
 }
