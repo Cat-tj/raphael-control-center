@@ -122,6 +122,7 @@ final class DeviceContext: ObservableObject {
         p = os.path.expanduser(\(pyString(path)))
         mode = stat.S_IMODE(os.stat(p).st_mode) if os.path.exists(p) else 0o600
         if os.path.exists(p): shutil.copy2(p, p + '.raphael.bak')
+        os.makedirs(os.path.dirname(p) or '.', exist_ok=True)
         tmp = p + '.raphael.tmp'
         with open(tmp, 'wb') as f: f.write(base64.b64decode('\(b64)'))
         os.chmod(tmp, mode); os.replace(tmp, p); print('OK')
