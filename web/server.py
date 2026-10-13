@@ -562,11 +562,10 @@ def cloudflare_zones(token: str) -> list:
 
 class App:
     def __init__(self, cfg: dict):
-        build = os.path.join(HERE, "build")
         self.cfg = cfg
         self.metrics = Metrics(os.path.join(cfg["data"], "metrics.sqlite"))
-        self.ws = Workspace(os.path.join(cfg["data"], "workspace.sqlite"), build)
-        with open(os.path.join(build, "collector_linux.sh"), encoding="utf-8") as f:
+        self.ws = Workspace(os.path.join(cfg["data"], "workspace.sqlite"), os.path.join(HERE, "schema"))
+        with open(os.path.join(HERE, "remote", "collector_linux.sh"), encoding="utf-8") as f:
             self.monitor = Monitor(cfg, self.metrics, f.read())
         self.static = os.path.join(HERE, "static")
         self.last_refresh = 0.0

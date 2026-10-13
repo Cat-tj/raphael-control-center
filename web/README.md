@@ -12,8 +12,10 @@ Two implementations of the same server, same API, same data files:
 `tests/test_web.py` holds the HTTP contract; with `RAPHAEL_WEB_BIN=…/raphael-web` it runs against
 the Rust binary, and `deploy.sh` refuses to ship a Rust build that fails it. The Rust unit tests
 (`cargo test`) cover the same cron, job, alert, incident, action, backup and workspace cases as the
-Python ones. Scripts that run on the devices are shared files: `build/collector_linux.sh`
-(extracted from the Swift app), `remote/health.py`, `remote/files.py`.
+Python ones. Scripts that run on the devices are shared files: `remote/collector_linux.sh`,
+`remote/health.py`, `remote/files.py`; the workspace schema is `schema/schema_v1.sql`. The desktop
+app (`../desktop`) embeds the same server as a library, with the UI compiled in and an
+in-process collector (`native.rs`) for the computer it runs on.
 
 | Page | What it shows |
 |---|---|
@@ -44,14 +46,13 @@ containers and job log files are read-only.
 
 ## How it fits with the Mac app
 
-- **Same collector.** `extract.py` copies `MonitorStore.linuxScript` out of the Swift source at
-  deploy time, so both apps read devices identically. Job, alert and parsing rules in
-  `core.py` are ported from `Jobs.swift` / `MonitorStore.swift` and tested on the same cases.
+- **Same collector.** `remote/collector_linux.sh` is the one script every device runs (it started
+  in the Swift app, which keeps a copy in `legacy/`). Job, alert and parsing rules are tested on
+  the same cases in Python and Rust.
 - **One collector run per device.** In the Mac app, Monitor → Sumber data → *Raphael Web* takes
   the URL; the Mac then reuses Raphael Web's latest sample (`/api/raw`) for those devices instead
   of SSH-ing in every minute, and falls back to SSH when Raphael Web doesn't answer.
-- **One workspace.** Raphael Web holds the shared `workspace.sqlite` (schema extracted from
-  `WorkspaceSchema.swift`). With *Sinkronkan workspace* on (Monitor → Sumber data), the Mac app
+- **One workspace.** Raphael Web holds the shared `workspace.sqlite` (`schema/schema_v1.sql`). With *Sinkronkan workspace* on (Monitor → Sumber data), the Mac app
   keeps a local copy: every committed local transaction is captured as its write statements,
   queued in `workspace-outbox.json` (kept while offline) and applied in order through
   `/api/ws/apply`, which only lets INSERT/UPDATE/DELETE on workspace tables through (SQLite
@@ -62,7 +63,6 @@ containers and job log files are read-only.
 ## Run and deploy
 
 ```bash
-python3 web/extract.py                                  # build/collector_linux.sh + build/schema_v1.sql
 python3 -m unittest discover -s web/tests               # tests
 python3 web/server.py --config path/to/config.json      # http://127.0.0.1:8790
 web/deploy.sh user@host 8787                            # tests (python, rust, contract), cross-compile, deploy

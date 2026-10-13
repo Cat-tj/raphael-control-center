@@ -33,7 +33,7 @@ pub fn parse_env(text: &str) -> HashMap<String, String> {
 
 pub fn expand(p: &str) -> String {
     if let Some(rest) = p.strip_prefix("~/") {
-        format!("{}/{rest}", std::env::var("HOME").unwrap_or_default())
+        format!("{}/{rest}", std::env::var("HOME").or_else(|_| std::env::var("USERPROFILE")).unwrap_or_default())
     } else {
         p.to_string()
     }
@@ -115,7 +115,9 @@ impl Monitor {
         let t = now();
         let slow = t - self.last_slow.lock().unwrap().get(&id).copied().unwrap_or(0.0) > 1800.0;
         let script = self.collector.replace("__SLOW__", if slow { "1" } else { "0" });
-        let (out, _) = if node.get("local").and_then(|v| v.as_bool()).unwrap_or(false) {
+        let (out, _) = if node.get("native").and_then(|v| v.as_bool()).unwrap_or(false) {
+            (crate::native::collect(slow).to_string(), 0)                 // this machine, any OS
+        } else if node.get("local").and_then(|v| v.as_bool()).unwrap_or(false) {
             util::run(&["sh", "-s"], Some(&script), 45)
         } else {
             util::run(&["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=6", "-o", "ServerAliveInterval=5", s(node, "ssh"), "sh -s"], Some(&script), 45)

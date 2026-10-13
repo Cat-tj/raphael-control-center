@@ -1,0 +1,27 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "Raphael Control Center",
+  "version": "0.3.0",
+  "identifier": "id.altora.raphael-desktop",
+  "build": {
+    "frontendDist": "../ui"
+  },
+  "app": {
+    "withGlobalTauri": true,
+    "windows": [],
+    "security": {
+      "csp": null
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": "all",
+    "category": "DeveloperTool",
+    "shortDescription": "Monitor server, website, job dan workspace",
+    "longDescription": "Raphael Control Center: pantau server, website, cron job dan backup, terima notifikasi, dan kelola portfolio, project serta task — tersambung ke Raphael Web di server atau dengan server lokal bawaan.",
+    "icon": ["icons/32x32.png", "icons/128x128.png", "icons/128x128@2x.png", "icons/icon.icns", "icons/icon.ico"],
+    "linux": { "deb": { "depends": [] } },
+    "macOS": { "minimumSystemVersion": "11.0" }
+  },
+  "plugins": {}
+}

@@ -1,0 +1,80 @@
+<!doctype html>
+<html lang="id">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light dark">
+<title>Pengaturan · Raphael</title>
+<style>
+  :root { --navy:#10224F; --muted:#7A8399; --violet:#7C5CE8; --line:#E9E6F2; --wash:#F4F1FB; --surface:#fff; --canvas:#FBF9FE; --red:#D8434F; --green:#0E7A57; }
+  @media (prefers-color-scheme: dark) { :root { --navy:#E8EBF7; --muted:#8790AA; --violet:#9D86F5; --line:#272C46; --wash:#1D2139; --surface:#161A2D; --canvas:#0D0F1C; --red:#F4707A; --green:#1F9D72; } }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--canvas); color: var(--navy); font: 14px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
+  main { padding: 24px; max-width: 560px; margin: 0 auto; }
+  .brand { display: flex; gap: 12px; align-items: center; margin-bottom: 18px; }
+  .brand img { width: 40px; height: 40px; border-radius: 10px; }
+  h1 { font-size: 20px; margin: 0; } .muted { color: var(--muted); } .small { font-size: 12px; }
+  .opt { display: block; border: 1px solid var(--line); background: var(--surface); border-radius: 14px; padding: 14px 16px; margin-bottom: 10px; cursor: pointer; }
+  .opt:has(input:checked) { border-color: var(--violet); box-shadow: 0 0 0 3px color-mix(in srgb, var(--violet) 18%, transparent); }
+  .opt b { display: block; } .opt input[type=radio] { float: right; }
+  input[type=url] { width: 100%; padding: 9px 11px; border-radius: 10px; border: 1px solid var(--line); background: var(--surface); color: inherit; font: inherit; margin-top: 8px; }
+  .row { display: flex; gap: 8px; align-items: center; margin-top: 8px; }
+  button { border: 1px solid var(--line); background: var(--surface); color: inherit; border-radius: 999px; padding: 8px 16px; font: inherit; font-weight: 600; cursor: pointer; }
+  button.primary { background: var(--violet); border-color: var(--violet); color: #fff; }
+  label.check { display: flex; gap: 8px; align-items: center; margin: 10px 0; }
+  #msg { min-height: 20px; margin: 12px 0; } .err { color: var(--red); } .ok { color: var(--green); }
+  code { font-size: 12px; overflow-wrap: anywhere; }
+</style>
+</head>
+<body>
+<main>
+  <div class="brand"><img src="icon.svg" alt=""><div><h1>Raphael Control Center</h1><div class="muted small" id="ver"></div></div></div>
+
+  <label class="opt"><input type="radio" name="mode" value="server"><b>Sambung ke Raphael Web</b>
+    <span class="muted small">Pakai server yang sudah jalan (misalnya di Raspberry Pi). Data, notifikasi dan workspace sama dengan device lain.</span>
+    <input type="url" id="url" placeholder="https://pi.tailnet-anda.ts.net:8787">
+    <div class="row"><button id="test" type="button">Tes koneksi</button><span id="testRes" class="small"></span></div>
+  </label>
+
+  <label class="opt"><input type="radio" name="mode" value="local"><b>Server lokal di komputer ini</b>
+    <span class="muted small">Tanpa server terpisah: app memantau komputer ini sendiri. Device lain (lewat SSH), website dan backup bisa ditambahkan di file config:</span>
+    <div><code id="cfg"></code></div>
+  </label>
+
+  <label class="check"><input type="checkbox" id="notif"> Notifikasi desktop untuk insiden baru</label>
+  <label class="check"><input type="checkbox" id="auto"> Buka saat login</label>
+
+  <div id="msg" class="small"></div>
+  <div class="row"><button class="primary" id="save" type="button">Simpan &amp; buka</button></div>
+</main>
+<script>
+const { invoke } = window.__TAURI__.core;
+const $ = (s) => document.querySelector(s);
+const mode = () => (document.querySelector('input[name=mode]:checked') || {}).value || "";
+function msg(text, cls = "") { $("#msg").textContent = text; $("#msg").className = "small " + cls; }
+(async () => {
+  const s = await invoke("get_settings");
+  $("#ver").textContent = "versi " + s.version;
+  $("#url").value = s.serverUrl || "";
+  $("#cfg").textContent = s.localConfig;
+  $("#notif").checked = s.notifications !== false;
+  $("#auto").checked = !!s.autostart;
+  const m = document.querySelector(`input[name=mode][value="${s.mode || "server"}"]`);
+  if (m) m.checked = true;
+})();
+$("#url").addEventListener("focus", () => (document.querySelector('input[value=server]').checked = true));
+$("#test").addEventListener("click", async () => {
+  $("#testRes").textContent = "menguji…"; $("#testRes").className = "small";
+  try { const r = await invoke("test_server", { url: $("#url").value }); $("#testRes").textContent = `✓ terhubung (Raphael Web ${r.version}${r.impl ? " · " + r.impl : ""})`; $("#testRes").className = "small ok"; }
+  catch (e) { $("#testRes").textContent = "✗ " + e; $("#testRes").className = "small err"; }
+});
+$("#save").addEventListener("click", async () => {
+  if (!mode()) return msg("Pilih salah satu mode.", "err");
+  if (mode() === "server" && !$("#url").value.trim()) return msg("Isi alamat Raphael Web.", "err");
+  msg("Menyimpan…");
+  try { await invoke("save_settings", { mode: mode(), serverUrl: $("#url").value.trim(), notifications: $("#notif").checked, autostart: $("#auto").checked }); }
+  catch (e) { msg(String(e), "err"); }
+});
+</script>
+</body>
+</html>

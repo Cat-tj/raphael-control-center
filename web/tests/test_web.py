@@ -24,7 +24,8 @@ import ops  # noqa: E402
 import server  # noqa: E402
 from workspace import Workspace, WorkspaceError, make_key, position  # noqa: E402
 
-BUILD = os.path.join(WEB, "build")
+SCHEMA = os.path.join(WEB, "schema")
+REMOTE = os.path.join(WEB, "remote")
 TZ = 8 * 3600
 ZONE = timezone(timedelta(seconds=TZ))
 BASE = datetime(2026, 10, 11, 19, 7, tzinfo=ZONE).timestamp()   # a Sunday
@@ -126,7 +127,7 @@ class Parse(unittest.TestCase):
 class Store(unittest.TestCase):
     def setUp(self):
         self.dir = tempfile.mkdtemp()
-        self.ws = Workspace(os.path.join(self.dir, "w.sqlite"), BUILD)
+        self.ws = Workspace(os.path.join(self.dir, "w.sqlite"), SCHEMA)
 
     def test_helpers_match_swift(self):
         self.assertEqual(position([], None), 1024)
@@ -152,7 +153,7 @@ class Store(unittest.TestCase):
         self.assertIsNotNone(t[a]["completed_at"])
         self.assertTrue(any(e["type"] == "task.completed" and "RCC-1 selesai" in e["title"] for e in snap["activity"]))
         # restart: a new store on the same file sees everything
-        again = Workspace(os.path.join(self.dir, "w.sqlite"), BUILD).snapshot()
+        again = Workspace(os.path.join(self.dir, "w.sqlite"), SCHEMA).snapshot()
         self.assertEqual(len(again["tasks"]), 2)
         self.ws.update_project(pid, {"lifecycle": "live"})
         self.assertTrue(any(e["type"] == "project.lifecycle" for e in self.ws.snapshot()["activity"]))
@@ -545,15 +546,15 @@ class Ops(unittest.TestCase):
 class Collector(unittest.TestCase):
     def test_collector_python_compiles(self):
         # A syntax error here makes every device look unreachable (and pages someone).
-        s = open(os.path.join(BUILD, "collector_linux.sh"), encoding="utf-8").read()
+        s = open(os.path.join(REMOTE, "collector_linux.sh"), encoding="utf-8").read()
         body = s.split("<<'RAPHAEL_PY'\n", 1)[1].rsplit("RAPHAEL_PY", 1)[0]
         compile(body.replace("__SLOW__", "0"), "collector_linux", "exec")
         import files as f, operations as o
         compile(f.SCRIPT, "files", "exec")
         compile(o.HEALTH_SCRIPT, "health", "exec")
 
-    def test_extracted_from_swift(self):
-        s = open(os.path.join(BUILD, "collector_linux.sh"), encoding="utf-8").read()
+    def test_collector_shape(self):
+        s = open(os.path.join(REMOTE, "collector_linux.sh"), encoding="utf-8").read()
         self.assertTrue(s.startswith("python3 - <<'RAPHAEL_PY'"))
         self.assertIn("__SLOW__", s)
         self.assertTrue(s.rstrip().endswith("RAPHAEL_PY"))

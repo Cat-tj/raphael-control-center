@@ -5,3 +5,5 @@ build/
 web/config.local.json
 __pycache__/
 web/rust/target/
+target/
+desktop/src-tauri/gen/

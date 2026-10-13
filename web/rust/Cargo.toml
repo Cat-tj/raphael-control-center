@@ -19,10 +19,12 @@ chrono = { version = "0.4", default-features = false, features = ["clock", "std"
 regex = "1"
 glob = "0.3"
 uuid = { version = "1", features = ["v4"] }
+sysinfo = { version = "0.33", default-features = false, features = ["system", "disk", "network", "component"] }
 
-[profile.release]
-opt-level = "s"
-lto = true
-codegen-units = 1
-strip = true
-panic = "unwind"
+[lib]
+name = "raphael_web"
+path = "src/lib.rs"
+
+[[bin]]
+name = "raphael-web"
+path = "src/main.rs"

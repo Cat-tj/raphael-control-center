@@ -1,0 +1,7 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "settings",
+  "description": "Only the bundled settings window may call the app's commands; remote Raphael Web pages get no IPC.",
+  "windows": ["settings"],
+  "permissions": ["core:default", "opener:default"]
+}

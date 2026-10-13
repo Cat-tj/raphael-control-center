@@ -643,7 +643,7 @@ mod tests {
 
     fn store() -> Workspace {
         let dir = std::env::temp_dir().join(format!("rw-{}", new_id()));
-        Workspace::open(dir.join("w.sqlite").to_str().unwrap(), &[(1, include_str!("../../build/schema_v1.sql"))]).unwrap()
+        Workspace::open(dir.join("w.sqlite").to_str().unwrap(), &[(1, include_str!("../../schema/schema_v1.sql"))]).unwrap()
     }
     fn snap(ws: &Workspace) -> Value {
         ws.snapshot().unwrap()

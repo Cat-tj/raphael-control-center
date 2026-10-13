@@ -1,0 +1,74 @@
+name: Desktop app
+
+# Builds Raphael Control Center for Windows, Linux and macOS. Every push to main uploads the
+# installers as workflow artifacts; a tag "v*" also attaches them to a draft GitHub release.
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+    paths: ["desktop/**", "web/**", "Cargo.toml", "Cargo.lock", ".github/workflows/desktop.yml"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  test:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.12" }
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Python tests (server reference + HTTP contract)
+        run: python3 -m unittest discover -s web/tests
+      - name: Rust tests
+        run: cargo test -p raphael-web --release
+      - name: HTTP contract against the Rust server
+        run: |
+          cargo build -p raphael-web --release
+          cd web && RAPHAEL_WEB_BIN=$PWD/../target/release/raphael-web python3 -m unittest tests.test_web.Http
+
+  build:
+    needs: test
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: windows-latest, args: "" }
+          - { os: ubuntu-22.04, args: "" }
+          - { os: macos-latest, args: "--target universal-apple-darwin" }
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.os == 'macos-latest' && 'aarch64-apple-darwin,x86_64-apple-darwin' || '' }}
+      - uses: Swatinem/rust-cache@v2
+      - name: Linux packages
+        if: matrix.os == 'ubuntu-22.04'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev patchelf
+      - uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          projectPath: desktop
+          tauriScript: npx --yes @tauri-apps/cli@2
+          args: ${{ matrix.args }}
+          tagName: ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || '' }}
+          releaseName: ${{ startsWith(github.ref, 'refs/tags/') && format('Raphael Control Center {0}', github.ref_name) || '' }}
+          releaseDraft: true
+      - uses: actions/upload-artifact@v4
+        with:
+          name: raphael-${{ matrix.os }}
+          path: |
+            target/**/release/bundle/**/*.msi
+            target/**/release/bundle/**/*.exe
+            target/**/release/bundle/**/*.deb
+            target/**/release/bundle/**/*.AppImage
+            target/**/release/bundle/**/*.rpm
+            target/**/release/bundle/**/*.dmg
+          if-no-files-found: ignore

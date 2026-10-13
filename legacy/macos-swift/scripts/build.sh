@@ -21,9 +21,14 @@ OPT=(-O -whole-module-optimization)
 SDK=$(xcrun --show-sdk-path)
 ARCH=$(uname -m)
 # The embedded Linux collector is Python inside a Swift string: make sure it still compiles.
-python3 web/extract.py >/dev/null && python3 -c "
-s=open('web/build/collector_linux.sh').read(); compile(s.split(\"<<'RAPHAEL_PY'\n\",1)[1].rsplit('RAPHAEL_PY',1)[0], 'collector', 'exec')" \
-  || { echo "✗ embedded collector script has a Python error"; exit 1; }
+python3 - <<'PY' || { echo "✗ embedded collector script has a Python error"; exit 1; }
+import re
+s = open("Sources/ControlCenter/MonitorStore.swift", encoding="utf-8").read()
+m = re.search(r'static let linuxScript = #"""\n(.*?)\n\s*"""#', s, re.S)
+lines = m.group(1).split("\n"); ind = min(len(l) - len(l.lstrip()) for l in lines if l.strip())
+body = "\n".join(l[ind:] for l in lines).split("<<'RAPHAEL_PY'\n", 1)[1].rsplit("RAPHAEL_PY", 1)[0]
+compile(body, "collector", "exec")
+PY
 echo "▸ compiling ($CONFIG, $ARCH)"
 swiftc -swift-version 5 "${OPT[@]}" -sdk "$SDK" -target "$ARCH-apple-macos14.0" \
   -module-name RaphaelControlCenter \

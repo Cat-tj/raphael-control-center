@@ -1,82 +1,81 @@
 # Raphael Control Center
 
-A native macOS menu bar app to run a small self-hosted infrastructure from one window:
-servers (Mac, Raspberry Pi, VPS over SSH/Tailscale), the apps on them, cloud projects,
-a [Hermes](https://github.com/NousResearch/hermes-agent) AI agent, an
-[OmniRoute](https://github.com/diegosouzapw/OmniRoute) LLM router and a 3D knowledge graph.
+Run a small self-hosted infrastructure from one place: servers (Raspberry Pi, VPS, the machine
+you are on), the websites and apps on them, cron jobs and backups, a
+[Hermes](https://github.com/NousResearch/hermes-agent) AI agent, an
+[OmniRoute](https://github.com/diegosouzapw/OmniRoute) LLM router — plus portfolios, projects
+and a Kanban board. Alerts reach you as WhatsApp messages (through Hermes) and desktop
+notifications.
 
-SwiftUI + AppKit, no third-party dependencies, no telemetry. Secrets stay in the Keychain.
+**Windows, Linux and macOS.** Written in Rust. No telemetry; network calls go only to your own
+devices and the services you configure.
+
+```
+desktop/   the app (Tauri): window + tray icon + notifications, Windows / Linux / macOS
+web/       the server (Rust; Python reference) and the web UI the app and browsers show
+legacy/    the original native macOS app (Swift), kept while features are ported
+```
+
+## How it fits together
+
+- **Raphael Web** (`web/`) is a small server for an always-on box such as a Raspberry Pi: it
+  samples your devices every minute (SSH, the same collector everywhere), checks websites and
+  certificates, reads Cloudflare / OmniRoute / Hermes, keeps incidents and 30 days of hourly
+  metrics, sends WhatsApp alerts, and holds the shared workspace. Reach it from any device on
+  your tailnet (`tailscale serve`), as a web page or an installable PWA.
+- **The app** (`desktop/`) has two modes:
+  - *Sambung ke Raphael Web* — the window shows your server: same data, alerts and workspace on
+    every computer.
+  - *Server lokal* — no separate server: the app runs Raphael Web inside itself and monitors this
+    computer (CPU, RAM, disks, network, temperature on Windows, Linux and macOS) plus any SSH
+    devices you add to its config.
+
+  Either way it lives in the tray / menu bar and raises a desktop notification for each new
+  incident.
 
 ## Pages
 
-| Page | What it does |
+| Page | What it shows |
 |---|---|
-| **Overview** | Which projects need attention and the next action for each, my next tasks, delivery insights, operations summary. |
-| **Portfolio** | Portfolios with projects as grid, list or lifecycle Kanban (Idea → Archived, Paused flag); project discovery from ~/Projects, GitHub, Vercel and the Monitor. |
-| **My Work** | Tasks assigned to me across projects, by due date. |
-| **Projects** | Per-project workspace: Overview, Board (drag & drop Kanban, WIP limits, keyboard), Tasks, Roadmap, Development (GitHub), Deployments (Vercel/servers), Monitoring (health), Activity, Settings. |
-| **Roadmap / Activity** | Timeline of milestones, epics and due dates; unified, de-duplicated activity feed. |
-| **Dashboard** | One-screen summary of the chosen device (or all of them). |
-| **Infrastruktur** | Devices, health, Tailscale peers, actions (restart, reboot, terminal), a command runner. |
-| **Monitor** | Live + 24 h metrics per device (CPU, RAM, disk, network, temperature/throttling), Docker containers, custom services, pending/security updates, failed SSH logins. **Apps are discovered and watched on their own** — Docker compose projects, systemd services, Caddy sites (followed through the reverse proxy to what answers behind it), Vercel projects, n8n instances, websites and `~/Projects` (git state, running dev servers), linked to their GitHub repo and CI — and grouped Server / Cloud / Lokal and Berjalan / Bermasalah / Tidak berjalan. Website traffic comes from cloudflared metrics and Cloudflare Analytics; websites get uptime, response time and TLS expiry. |
-| **Aplikasi & Website** | Containers and services per device, saved websites. |
-| **File** | Browse any device, preview/edit text (with a `.raphael.bak` backup), images, download, upload by drag & drop, rename, new folder, delete to a trash folder, sudo reads. |
-| **OmniRoute** | Provider topology, account quota, cost; opens each instance's dashboard. |
-| **Agents & Token** | Hermes token use per day / task / source / model, the heaviest sessions, tips. |
-| **Knowledge** | 3D knowledge graph (graphify galaxy) per project or all merged; drop PDFs, Markdown, folders or a git URL to map them (local, 0 token); SOUL, memory and `.env` editors per Hermes profile. |
-| **Chat Raphael** | Chat with Hermes on any device, Claude-Code-style transcript with tool calls, subagents and a token breakdown; several chats can run at once. |
+| Overview | devices online, websites up, open incidents, backups, what needs attention |
+| Insiden · Notifikasi | incident history (30 days), WhatsApp alerts and the weekly report |
+| Portfolio · project board · tasks · activity | portfolios, projects, Kanban with drag & drop, task details |
+| Server | CPU / RAM / disk / temperature (1 h – 30 days), containers, services, updates, power & SD-card health, restart / logs |
+| Website · Traffic | uptime, response time, SSL expiry; Cloudflare Tunnel and Analytics |
+| Cron & job | crontab, systemd timers, Hermes cron: last/next run, failures, missed runs, run now |
+| File | read-only browser for every device (secrets refused) |
+| Agents & Token · OmniRoute | Hermes sessions and tokens; OmniRoute providers, usage and quotas |
 
-Every page follows the device switcher at the bottom of the sidebar: **Semua device** or one device.
+## Install
 
-Portfolio and project data is local SQLite — see [docs/WORKSPACE.md](docs/WORKSPACE.md).
+Download the installer for your system from the latest
+[release](https://github.com/Cat-tj/raphael-control-center/releases) or the
+[Desktop app workflow](https://github.com/Cat-tj/raphael-control-center/actions/workflows/desktop.yml)
+artifacts: `.msi` / `.exe` (Windows), `.deb` / `.AppImage` (Linux), `.dmg` (macOS). Builds are not
+code-signed yet: Windows SmartScreen and macOS Gatekeeper will ask once (macOS: right-click →
+Open).
 
 ## Build
 
-Needs macOS 14+ and the Xcode command line tools (`xcode-select --install`). No Xcode project.
-
 ```bash
-scripts/build.sh            # → build/Raphael Control Center.app
-scripts/build.sh --install  # → ~/Applications, then opens it
-scripts/test.sh             # workspace tests (no Xcode needed)
+cargo install tauri-cli --version "^2"
+cd desktop && cargo tauri build          # the app for this OS
+cargo test -p raphael-web                # server tests
+python3 -m unittest discover -s web/tests
+web/deploy.sh user@host 8787             # Raphael Web on a Linux box (see web/README.md)
 ```
 
-Optional: create a code-signing certificate named **Raphael Local** (Keychain Access →
-Certificate Assistant → Create a Certificate…, type *Code Signing*) so the Keychain
-doesn't ask again after every build.
-
-## Raphael Web
-
-[`web/`](web/README.md) runs the Monitor (servers, websites, cron jobs, traffic) and the
-Workspace (portfolios, projects, Kanban), alerts, incidents and backups as a small web app on an
-always-on Linux box, such as a Raspberry Pi, reachable from any device on your tailnet. The server
-is a single Rust binary (a Python reference implementation is kept as fallback); it uses the same
-collector and workspace schema as the Mac app, and the Mac app can sync its workspace with it.
-
-```
-web/deploy.sh user@host 8787
-```
-
-## Optional companions
-
-The app works with whatever it finds and greys out what is missing:
-
-- **SSH** access to your servers (key-based; `~/.ssh/config` hosts are added automatically). Servers need `python3`.
-- **Tailscale** CLI, for peers and reaching devices off the LAN.
-- **Hermes** (`~/.hermes`) on the Mac or a server, for Chat, Agents & Token and Knowledge.
-- **OmniRoute**, for the OmniRoute page.
-- **graphify-galaxy** in `~/graphify-galaxy`, for the 3D graph and document mapping.
-- **gh** (logged in) for GitHub; a **Vercel** token, a **Cloudflare** token with *Analytics: Read*, and **n8n** URL + API key in Monitor → *Sumber data*.
+Linux build dependencies: `libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev`.
 
 ## Data
 
-- Settings and configuration: `~/Library/Application Support/Raphael/` (`nodes.json`, `websites.json`, `omniroute.json`, `n8n.json`, `apps.json`, metrics history, built graphs).
-- Secrets: macOS Keychain, service `id.altora.raphael-control-center`.
-- Network calls go only to your own devices and the services you connect.
+- App settings: the OS app-config folder (`id.altora.raphael-desktop/settings.json`); the local
+  server's config and data under the app-data folder (`raphael-web/`).
+- Server: `~/.config/raphael-web/config.json`, data in `~/.local/share/raphael-web/`.
+- Tokens (Cloudflare, OmniRoute) are read on the server from the `.env` files you list; they are
+  never sent to a browser or stored in the workspace.
 
-## URL scheme
-
-`raphael://monitor`, `raphael://files`, `raphael://chat?q=…`, `raphael://device?id=…`,
-`raphael://knowledge?add=/path/file.pdf` — handy for scripts and agents.
+Workspace format and sync: [docs/WORKSPACE.md](docs/WORKSPACE.md).
 
 ## License
 

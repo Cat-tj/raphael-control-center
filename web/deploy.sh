@@ -3,7 +3,7 @@
 #
 #   web/deploy.sh user@host [https-port]
 #
-# - runs the tests, extracts the collector + schema from the Swift sources
+# - runs the tests (Python, Rust, and the HTTP contract against the Rust binary)
 # - copies the app to ~/raphael-web/app on the host (config and data are never overwritten)
 # - installs ~/.config/raphael-web/config.json from web/config.local.json only if none exists
 # - (re)starts the systemd user service raphael-web (127.0.0.1 only, memory-capped)
@@ -19,21 +19,20 @@ HTTPS_PORT=${2:-8787}
 IMPL=${RAPHAEL_WEB_IMPL:-rust}          # rust (default) or python; both are always copied, the unit picks one
 export PATH=/opt/homebrew/opt/rustup/bin:$HOME/.cargo/bin:$PATH
 
-python3 web/extract.py
 python3 -m unittest discover -s web/tests 2>&1 | tail -1 | grep -q '^OK' || { echo "✗ tests failed"; python3 -m unittest discover -s web/tests 2>&1 | tail -20; exit 1; }
 echo "✓ python tests"
 if [ "$IMPL" = rust ]; then
   (cd web/rust && cargo test --release -q 2>&1 | grep -q "test result: ok") || { echo "✗ rust tests failed"; (cd web/rust && cargo test --release 2>&1 | tail -30); exit 1; }
-  (cd web/rust && cargo build --release -q) && (cd web && RAPHAEL_WEB_BIN=$PWD/rust/target/release/raphael-web python3 -m unittest tests.test_web.Http 2>&1 | tail -1 | grep -q '^OK') \
+  (cd web/rust && cargo build --release -q) && (cd web && RAPHAEL_WEB_BIN=$PWD/../target/release/raphael-web python3 -m unittest tests.test_web.Http 2>&1 | tail -1 | grep -q '^OK') \
     || { echo "✗ HTTP contract tests failed against the Rust server"; exit 1; }
   echo "✓ rust tests + HTTP contract"
   (cd web/rust && cargo zigbuild --release -q --target aarch64-unknown-linux-gnu.2.36) || { echo "✗ cross-compile failed"; exit 1; }
-  cp web/rust/target/aarch64-unknown-linux-gnu/release/raphael-web web/build/raphael-web
+  mkdir -p web/build && cp target/aarch64-unknown-linux-gnu/release/raphael-web web/build/raphael-web
   echo "✓ built $(du -h web/build/raphael-web | cut -f1) aarch64 binary"
 fi
 
 ssh -o BatchMode=yes "$HOST" 'mkdir -p ~/raphael-web/app ~/.config/raphael-web ~/.config/systemd/user'
-COPYFILE_DISABLE=1 tar --no-xattrs -C web -czf - $(cd web && ls *.py) remote static build | ssh -o BatchMode=yes "$HOST" 'rm -rf ~/raphael-web/app.new && mkdir ~/raphael-web/app.new && tar -C ~/raphael-web/app.new -xzf - && rm -rf ~/raphael-web/app.old && { [ -d ~/raphael-web/app ] && mv ~/raphael-web/app ~/raphael-web/app.old; true; } && mv ~/raphael-web/app.new ~/raphael-web/app'
+COPYFILE_DISABLE=1 tar --no-xattrs -C web -czf - $(cd web && ls *.py) remote schema static build | ssh -o BatchMode=yes "$HOST" 'rm -rf ~/raphael-web/app.new && mkdir ~/raphael-web/app.new && tar -C ~/raphael-web/app.new -xzf - && rm -rf ~/raphael-web/app.old && { [ -d ~/raphael-web/app ] && mv ~/raphael-web/app ~/raphael-web/app.old; true; } && mv ~/raphael-web/app.new ~/raphael-web/app'
 echo "✓ copied (previous version kept in ~/raphael-web/app.old)"
 
 if [ -f web/config.local.json ]; then
