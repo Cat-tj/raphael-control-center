@@ -33,10 +33,13 @@ from urllib.parse import parse_qs, urlparse
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 import core  # noqa: E402
+import files  # noqa: E402
+import hermes  # noqa: E402
 from workspace import Workspace, WorkspaceError  # noqa: E402
 
 VERSION = "0.1.0"
 KEEP = 24 * 3600
+OMNIROUTE_ENV_KEYS = ["OMNIROUTE_API_KEY", "HERMES_CUSTOM_OMNIROUTE_API_KEY", "HERMES_CUSTOM_LOCALHOST_20128_API_KEY"]
 CF_ENV_KEYS = ["CLOUDFLARE_API_TOKEN_FULL", "CF_API_TOKEN_FULL", "API_TOKEN_FULL", "CLOUDFLARE_ANALYTICS_TOKEN",
                "CLOUDFLARE_API_TOKEN", "CF_API_TOKEN"]
 
@@ -135,6 +138,8 @@ class Monitor:
         self.last_slow: dict = {}
         self.failures: dict = {}
         self.sampling: set = set()
+        self.raw_line: dict = {}
+        self.omniroute: dict = {"state": "idle"}
         self.site_status: dict = {}
         self.certs: dict = {k: v for k, v in metrics.get("certs", {}).items() if "://" not in k}
         self.cert_checked: dict = {}
@@ -191,6 +196,7 @@ class Monitor:
                 self.detail[nid] = prev
                 return
             self.failures[nid] = 0
+            self.raw_line[nid] = {"at": now, "raw": j}            # for the Mac app (/api/raw)
             if slow:
                 self.last_slow[nid] = now
             d = core.parse(j, now=now, previous=self.detail.get(nid), slow=slow)
@@ -276,6 +282,40 @@ class Monitor:
         self.persist()
 
     # Cloudflare
+    def env_values(self, keys: list, extra=None) -> list:
+        """[(source, value)] for the given names in the configured .env files, first match first."""
+        out = []
+        for f in self.cfg.get("envFiles", []):
+            try:
+                with open(os.path.expanduser(f), encoding="utf-8") as fh:
+                    env = parse_env(fh.read())
+            except OSError:
+                continue
+            names = list(keys) + (sorted(k for k in env if k not in keys and extra(k)) if extra else [])
+            for k in names:
+                v = (env.get(k) or "").strip()
+                if v and all(v != t for _, t in out):
+                    out.append((f"{f} · {k}", v))
+        return out
+
+    def refresh_omniroute(self):
+        o = self.cfg.get("omniroute") or {}
+        base = (o.get("base") or "http://127.0.0.1:20128").rstrip("/")
+        keys = self.env_values(o.get("envKeys") or OMNIROUTE_ENV_KEYS)
+        res = {"state": "noKey", "base": base, "dashboard": o.get("dashboard"), "tried": [], "at": time.time()}
+        for source, key in keys or [("tanpa key", "")]:
+            try:
+                res.update(omniroute_load(base, key))
+                res["state"], res["keySource"] = "ok", source
+                break
+            except PermissionError:
+                res["tried"].append({"source": source, "result": "key ditolak"})
+                res["state"] = "denied"
+            except Exception as e:  # noqa: BLE001
+                res["tried"].append({"source": source, "result": str(e)[:160]})
+                res["state"] = "error"
+        self.omniroute = res
+
     def cf_tokens(self) -> list:
         out = []
         tok = os.environ.get("RAPHAEL_CLOUDFLARE_TOKEN")
@@ -333,6 +373,7 @@ class Monitor:
         threading.Thread(target=loop, args=(self.sample_all, 60, "sample"), daemon=True).start()
         threading.Thread(target=lambda: (time.sleep(20), loop(self.check_sites, 60, "sites")), daemon=True).start()
         threading.Thread(target=lambda: (time.sleep(5), loop(self.refresh_cloudflare, 600, "cloudflare")), daemon=True).start()
+        threading.Thread(target=lambda: (time.sleep(8), loop(self.refresh_omniroute, 120, "omniroute")), daemon=True).start()
 
     # Views
     def state(self) -> dict:
@@ -352,7 +393,11 @@ class Monitor:
         cf = dict(self.cloudflare)
         alerts = core.alerts(self.nodes, self.detail, self.last, sites, self.site_status,
                              {s["url"]: self.certs[host_key(s["url"])] for s in sites if host_key(s["url"]) in self.certs})
-        return {"version": VERSION, "now": time.time(), "nodes": nodes, "sites": sites, "alerts": alerts, "cloudflare": cf}
+        om = self.omniroute
+        if om.get("state") == "ok" and om.get("down"):
+            alerts.append({"node": "OmniRoute", "level": 1, "text": f"{om['down']} provider down", "kind": "omniroute"})
+        return {"version": VERSION, "now": time.time(), "nodes": nodes, "sites": sites, "alerts": alerts, "cloudflare": cf,
+                "links": self.cfg.get("links", []), "omniroute": {k: om.get(k) for k in ("state", "healthy", "degraded", "down", "dashboard")}}
 
 
 def host_key(url: str) -> str:
@@ -369,6 +414,63 @@ def cert_expiry(host: str, port: int):
         return ssl.cert_time_to_seconds(na) if na else None
     except Exception:  # noqa: BLE001
         return None
+
+
+def omniroute_load(base: str, key: str) -> dict:
+    def get(path):
+        req = urllib.request.Request(base + path, headers={"Authorization": f"Bearer {key}"} if key else {})
+        try:
+            with urllib.request.urlopen(req, timeout=20) as r:
+                return json.loads(r.read())
+        except urllib.error.HTTPError as e:
+            if e.code in (401, 403):
+                raise PermissionError(str(e.code))
+            raise RuntimeError(f"HTTP {e.code}")
+        except urllib.error.URLError as e:
+            raise RuntimeError(f"tidak terjangkau: {e.reason}")
+    providers = get("/api/providers")
+    out = {"connections": [{"name": c.get("name") or "?", "provider": c.get("provider") or "?", "active": bool(c.get("isActive")),
+                            "testStatus": c.get("testStatus") or "", "lastError": c.get("lastError")} for c in providers.get("connections") or []]}
+    def safe(path):
+        try:
+            return get(path)
+        except Exception:  # noqa: BLE001 — optional panels
+            return {}
+    m = safe("/api/providers/health-matrix")
+    sm = m.get("summary") or {}
+    out.update({"healthy": sm.get("healthyCount", 0), "degraded": sm.get("degradedCount", 0), "down": sm.get("downCount", 0),
+                "models": sm.get("modelCount", 0), "providerStates": {p.get("provider"): p.get("state") for p in m.get("providers") or []}})
+    met = safe("/api/provider-metrics").get("metrics") or {}
+    out["metrics"] = sorted([{"provider": k, "requests": v.get("totalRequests", 0), "successRate": v.get("successRate", 0),
+                              "latency": v.get("avgLatencyMs", 0), "lastAt": v.get("lastRequestAt"),
+                              "state": out["providerStates"].get(k) or ("healthy" if (v.get("successRate") or 0) >= 90 else "degraded" if (v.get("successRate") or 0) >= 70 else "down")}
+                             for k, v in met.items() if isinstance(v, dict)], key=lambda x: -(x["requests"] or 0))
+    a = safe("/api/usage/analytics")
+    s = a.get("summary") or {}
+    out["usage"] = {"requests": s.get("totalRequests", 0), "tokens": s.get("totalTokens", 0), "cost": s.get("totalCost", 0),
+                    "successRate": s.get("successRatePct"), "latency": s.get("avgLatencyMs"), "since": s.get("firstRequest")}
+    out["days"] = [{"date": d.get("date"), "requests": d.get("requests", 0), "tokens": d.get("totalTokens", 0)} for d in a.get("dailyTrend") or []][-14:]
+    out["byModel"] = sorted([{"name": r.get("model"), "provider": r.get("provider"), "requests": r.get("requests", 0), "tokens": r.get("totalTokens", 0)}
+                             for r in a.get("byModel") or []], key=lambda r: -(r["tokens"] or 0))[:10]
+    lim = safe("/api/usage/provider-limits").get("caches") or {}
+    names = {c.get("id"): c for c in providers.get("connections") or []}
+    quotas = []
+    for cid, v in lim.items():
+        if not isinstance(v, dict):
+            continue
+        ws = []
+        for label, q in (v.get("quotas") or {}).items():
+            if not isinstance(q, dict):
+                continue
+            used, total = float(q.get("used") or 0), float(q.get("total") or 0)
+            rem = q.get("remainingPercentage")
+            rem = float(rem) if rem is not None else (max(0, (total - used) / total * 100) if total else 100)
+            ws.append({"label": q.get("displayName") or label, "remaining": rem, "resetAt": q.get("resetAt")})
+        c = names.get(cid) or {}
+        quotas.append({"account": c.get("name") or cid[:8], "provider": c.get("provider") or "?", "plan": v.get("plan"),
+                       "windows": sorted(ws, key=lambda w: w["remaining"])})
+    out["quotas"] = sorted(quotas, key=lambda q: (not q["windows"], q["provider"], q["account"]))
+    return out
 
 
 def cf_call(token: str, path: str, body=None) -> dict:
@@ -504,6 +606,23 @@ def make_handler(app: App):
                     return self._json(200, {"url": q.get("url"), "checks": app.metrics.checks(q.get("url", ""), 24)})
                 if u.path == "/api/workspace":
                     return self._json(200, app.ws.snapshot())
+                if u.path == "/api/raw":
+                    # Latest raw collector output, so the Mac app can reuse this sample instead of SSH-ing in itself.
+                    r = app.monitor.raw_line.get(q.get("node", ""))
+                    return self._json(200 if r else 404, r or {"error": "belum ada sample"})
+                if u.path == "/api/agents":
+                    profs = hermes.profiles(app.cfg.get("hermesHome", "~/.hermes"))
+                    sel = next((p for p in profs if p["id"] == q.get("profile")), profs[0] if profs else None)
+                    snap = hermes.snapshot(sel["path"]) if sel else {"error": "Hermes tidak ditemukan di server ini"}
+                    return self._json(200, {"profiles": [{"id": p["id"], "name": p["name"]} for p in profs],
+                                            "profile": sel and sel["id"], "snapshot": snap})
+                if u.path == "/api/omniroute":
+                    return self._json(200, app.monitor.omniroute)
+                if u.path in ("/api/files", "/api/file"):
+                    node = next((n for n in app.cfg["nodes"] if n["id"] == q.get("node")), None)
+                    if not node:
+                        return self._json(404, {"error": "device tidak dikenal"})
+                    return self._json(200, files.run(node, "list" if u.path == "/api/files" else "read", q.get("path") or "~"))
                 if u.path == "/api/me":
                     return self._json(200, {"login": self.headers.get("Tailscale-User-Login"), "name": self.headers.get("Tailscale-User-Name")})
                 if u.path == "/healthz":
@@ -544,6 +663,9 @@ def make_handler(app: App):
                         app.last_refresh = time.time()
                         threading.Thread(target=app.monitor.sample_all, daemon=True).start()
                         threading.Thread(target=app.monitor.check_sites, daemon=True).start()
+                    return self._json(202, {"ok": True})
+                if parts[:2] == ["api", "omniroute"] and method == "POST":
+                    threading.Thread(target=app.monitor.refresh_omniroute, daemon=True).start()
                     return self._json(202, {"ok": True})
                 if parts[:2] == ["api", "cloudflare"] and method == "POST":
                     threading.Thread(target=app.monitor.refresh_cloudflare, daemon=True).start()

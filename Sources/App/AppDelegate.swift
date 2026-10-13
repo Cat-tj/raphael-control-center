@@ -72,6 +72,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
         let links = NSMenuItem(title: "Buka dashboard", action: nil, keyEquivalent: "")
         let sub = NSMenu()
+        if !MonitorStore.webURL.isEmpty {
+            let item = add(sub, "Raphael Web", #selector(openLink(_:)))
+            item.representedObject = MonitorStore.webURL
+            sub.addItem(.separator())
+        }
         for inst in OmniRouteStore.shared.instances {
             let item = add(sub, "OmniRoute · \(inst.name)", #selector(openLink(_:)))
             item.representedObject = inst.dashboardURL

@@ -382,6 +382,7 @@ struct SourcesSheet: View {
     @State private var nName = ""
     @State private var nURL = ""
     @State private var nKey = ""
+    @State private var webURL = MonitorStore.webURL
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -389,6 +390,16 @@ struct SourcesSheet: View {
             Divider().overlay(RTheme.line)
             ScrollView {
                 VStack(alignment: .leading, spacing: 14) {
+                    source("Raphael Web", "server.rack", state: webURL.isEmpty ? ("Tidak dipakai", RTheme.muted) : ("Dipakai untuk server", RTheme.green),
+                           help: "Kalau Raphael Web jalan di salah satu server, Mac memakai sample-nya untuk server (tanpa SSH ke sana tiap menit). Kosongkan untuk selalu lewat SSH.") {
+                        HStack {
+                            TextField("https://host.tailnet.ts.net:8787", text: $webURL).textFieldStyle(.roundedBorder)
+                            Button("Simpan") { MonitorStore.webURL = webURL }.buttonStyle(RPillButton(primary: true)).disabled(webURL == MonitorStore.webURL)
+                            if !MonitorStore.webURL.isEmpty, let u = URL(string: MonitorStore.webURL) {
+                                Button("Buka") { NSWorkspace.shared.open(u) }.buttonStyle(RPillButton())
+                            }
+                        }
+                    }
                     source("Cloudflare Analytics", "cloud.fill", state: cfState,
                            help: "Traffic per domain (7 hari). Token: dash.cloudflare.com → API Tokens → template \"Read analytics and logs\".") {
                         HStack {

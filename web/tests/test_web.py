@@ -17,6 +17,8 @@ from datetime import datetime, timedelta, timezone
 WEB = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, WEB)
 import core  # noqa: E402
+import files  # noqa: E402
+import hermes  # noqa: E402
 import server  # noqa: E402
 from workspace import Workspace, WorkspaceError, make_key, position  # noqa: E402
 
@@ -263,6 +265,18 @@ class Http(unittest.TestCase):
         self.assertEqual(self.req("POST", "/api/project", {"name": "x"},
                                   headers={"X-Raphael": "1", "Content-Type": "application/json", "Origin": "https://evil.example"})[0], 403)
 
+    def test_new_endpoints(self):
+        self.assertEqual(self.req("GET", "/api/raw?node=local", headers={})[0], 404)          # nothing sampled yet
+        self.app.monitor.raw_line["local"] = {"at": 1, "raw": {"cpu": 0.1}}
+        code, r, _ = self.req("GET", "/api/raw?node=local", headers={})
+        self.assertEqual((code, r["raw"]["cpu"]), (200, 0.1))
+        code, r, _ = self.req("GET", "/api/files?node=local&path=" + urllib.request.quote(WEB), headers={})
+        self.assertIn("server.py", [i["name"] for i in r["items"]])
+        self.assertEqual(self.req("GET", "/api/files?node=nope&path=/", headers={})[0], 404)
+        code, r, _ = self.req("GET", "/api/agents", headers={})
+        self.assertEqual(code, 200)
+        self.assertEqual(self.req("GET", "/api/omniroute", headers={})[1]["state"], "idle")
+
     def test_bad_json(self):
         r = urllib.request.Request(self.base + "/api/project", method="POST", data=b"{nope", headers={"X-Raphael": "1", "Content-Type": "application/json"})
         with self.assertRaises(urllib.error.HTTPError) as e:
@@ -297,6 +311,54 @@ class Persist(unittest.TestCase):
         self.assertTrue(again.site_status["https://x"]["ok"])
         gone = server.Monitor({"nodes": [], "sites": []}, server.Metrics(os.path.join(d, "m.sqlite")), "")
         self.assertEqual(gone.detail, {})                               # removed devices are dropped
+
+
+class Files(unittest.TestCase):
+    def test_secret_names(self):
+        for p in ["~/.hermes/.env", "/etc/app/db.env", "/home/u/.ssh/config", "/srv/x/server.key", "cert.pem", "api_token.txt",
+                  "/home/u/.git-credentials", "/home/u/.ssh/", "id_ed25519.pub"]:
+            self.assertTrue(files.is_secret(p), p)
+        for p in ["/etc/caddy/Caddyfile", "/var/log/syslog", "~/notes.md", "/etc/nginx/nginx.conf"]:
+            self.assertFalse(files.is_secret(p), p)
+
+    def test_list_read_and_symlink_guard(self):
+        d = tempfile.mkdtemp()
+        with open(os.path.join(d, "a.txt"), "w") as f:
+            f.write("halo")
+        with open(os.path.join(d, ".env"), "w") as f:
+            f.write("SECRET=1")
+        os.symlink(os.path.join(d, ".env"), os.path.join(d, "innocent.txt"))
+        node = {"local": True}
+        lst = files.run(node, "list", d)
+        names = {i["name"]: i for i in lst["items"]}
+        self.assertTrue(names[".env"]["secret"])
+        self.assertFalse(names["a.txt"]["secret"])
+        self.assertEqual(files.run(node, "read", os.path.join(d, "a.txt"))["text"], "halo")
+        self.assertIn("rahasia", files.run(node, "read", os.path.join(d, ".env"))["error"])
+        self.assertIn("rahasia", files.run(node, "read", os.path.join(d, "innocent.txt"))["error"])   # via symlink
+        self.assertIn("error", files.run(node, "read", os.path.join(d, "missing")))
+
+
+class Hermes(unittest.TestCase):
+    def test_snapshot_from_state_db(self):
+        home = tempfile.mkdtemp()
+        db = sqlite3.connect(os.path.join(home, "state.db"))
+        db.executescript("""CREATE TABLE sessions (id TEXT, title TEXT, display_name TEXT, source TEXT, model TEXT, parent_session_id TEXT,
+            started_at REAL, last_activity_at REAL, ended_at REAL, message_count INT, tool_call_count INT, api_call_count INT,
+            input_tokens INT, cache_read_tokens INT, output_tokens INT, actual_cost_usd REAL, estimated_cost_usd REAL, hidden INT DEFAULT 0);""")
+        now = time.time()
+        db.execute("INSERT INTO sessions VALUES ('s1','Chat A','', 'whatsapp','gpt',NULL,?,?,NULL,4,2,3,100,50,20,NULL,0.01,0)", (now - 60, now - 30))
+        db.execute("INSERT INTO sessions VALUES ('s2','','Old', 'cli','gpt',NULL,?,?,?,1,0,1,10,0,5,NULL,NULL,0)", (now - 30 * 86400,) * 3)
+        db.commit()
+        db.close()
+        s = hermes.snapshot(home, now)
+        self.assertEqual(s["allTime"]["sessions"], 2)
+        self.assertEqual(s["today"]["tokens"], 170)
+        self.assertEqual(s["recent"][0]["title"], "Chat A")
+        self.assertTrue(s["recent"][0]["active"])
+        self.assertEqual(s["models"], [])                                # no session_model_usage table: tolerated
+        self.assertEqual(hermes.profiles(home)[0]["id"], "default")
+        self.assertIn("error", hermes.snapshot(tempfile.mkdtemp()))
 
 
 class Collector(unittest.TestCase):

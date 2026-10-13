@@ -13,7 +13,8 @@ const PRIO = ["Tanpa", "Low", "Medium", "High", "Urgent"];
 const NAV = [
   ["Ringkasan", [["overview", "⌂", "Overview"]]],
   ["Workspace", [["portfolio", "▦", "Portfolio"], ["tasks", "☑", "Semua task"], ["activity", "↻", "Activity"]]],
-  ["Operations", [["servers", "▤", "Server"], ["websites", "◎", "Website"], ["jobs", "◷", "Cron & job"], ["traffic", "↗", "Traffic"]]],
+  ["Operations", [["servers", "▤", "Server"], ["websites", "◎", "Website"], ["jobs", "◷", "Cron & job"], ["traffic", "↗", "Traffic"], ["files", "▱", "File"]]],
+  ["Intelligence", [["agents", "◈", "Agents & Token"], ["omniroute", "⇄", "OmniRoute"]]],
 ];
 
 // ── Formatting ──
@@ -119,12 +120,14 @@ function counts() {
 }
 function renderNav() {
   const c = counts();
-  const badge = { overview: c.bad, websites: c.sitesDown, jobs: c.jobs, servers: c.nodesDown };
+  const om = S.state && S.state.omniroute;
+  const badge = { overview: c.bad, websites: c.sitesDown, jobs: c.jobs, servers: c.nodesDown, omniroute: om && om.state === "ok" ? om.down : 0 };
   $("#nav").innerHTML = NAV.map(([g, items]) => `<div class="group">${esc(g)}</div>` + items.map(([id, ico, title]) => {
     const on = S.route === id || (id === "portfolio" && S.route === "project");
     const b = badge[id] ? `<span class="badge${id === "jobs" ? " warn" : ""}">${badge[id]}</span>` : "";
     return `<a href="#/${id}" class="${on ? "on" : ""}"><span class="ico">${ico}</span>${esc(title)}${b}</a>`;
-  }).join("")).join("");
+  }).join("")).join("") + ((S.state && S.state.links || []).length ? `<div class="group">Buka</div>` +
+    S.state.links.map((l) => `<a href="${esc(l.url)}" target="_blank" rel="noopener noreferrer"><span class="ico">↗</span>${esc(l.name)}</a>`).join("") : "");
 }
 function head(title, sub, actions = "") {
   return `<div class="head"><div><h1>${esc(title)}</h1>${sub ? `<p>${sub}</p>` : ""}</div><div class="actions">${actions}</div></div>`;
@@ -136,7 +139,7 @@ function render() {
   const main = $("#main");
   if (!S.state && !S.error) { main.innerHTML = `<div class="empty"><b>Memuat…</b></div>`; return; }
   if (S.error && !S.state) { main.innerHTML = `<div class="empty"><b>Server tidak menjawab</b>${esc(S.error)}</div>`; return; }
-  const pages = { overview, servers, websites, jobs, traffic, portfolio, project, tasks, activity };
+  const pages = { overview, servers, websites, jobs, traffic, files: filesPage, agents, omniroute, portfolio, project, tasks, activity };
   const keep = document.activeElement && document.activeElement.id ? document.activeElement.id : null;
   const scroll = window.scrollY;
   main.innerHTML = (pages[S.route] || overview)();
@@ -144,6 +147,9 @@ function render() {
   window.scrollTo(0, scroll);
   if (S.route === "servers") drawHistory();
   if (S.route === "project") wireBoard();
+  if (S.route === "agents") loadAgents();
+  if (S.route === "omniroute") loadOmni();
+  if (S.route === "files") loadFiles();
 }
 
 // ── Overview ──
@@ -347,6 +353,124 @@ function traffic() {
   }
   return head("Traffic", `Cloudflare Tunnel (langsung dari cloudflared) dan Cloudflare Analytics${cf.loadedAt ? ` · dimuat ${ago(cf.loadedAt)}` : ""}`, refreshBtn) +
     `<div class="stack">${tunnels}${analytics}</div>`;
+}
+
+// ── Agents & Token (Hermes) ──
+const fmtTok = (n) => (n >= 1e9 ? (n / 1e9).toFixed(2) + " M" : n >= 1e6 ? (n / 1e6).toFixed(1) + " jt" : n >= 1e3 ? (n / 1e3).toFixed(1) + " rb" : String(n || 0));
+async function loadAgents(force) {
+  const want = S.filters.profile || "";
+  if (!force && S.agents && S.agents.want === want && Date.now() - S.agents.at < 30000) return;
+  try {
+    const r = await api("GET", "/api/agents" + (want ? `?profile=${encodeURIComponent(want)}` : ""));
+    S.agents = { ...r, want, at: Date.now() };
+  } catch (e) { S.agents = { error: e.message, want, at: Date.now() }; }
+  if (S.route === "agents") { $("#main").innerHTML = agents(); }
+}
+function agents() {
+  const a = S.agents;
+  if (!a) return head("Agents & Token", "Memuat…");
+  if (a.error) return head("Agents & Token", esc(a.error));
+  const sel = `<select id="profileSel">${a.profiles.map((p) => `<option value="${esc(p.id)}" ${p.id === a.profile ? "selected" : ""}>${esc(p.name)}</option>`).join("")}</select>`;
+  const s = a.snapshot;
+  if (!s || s.error) return head("Agents & Token", esc((s && s.error) || "Tidak ada data"), sel);
+  const week = s.days.reduce((x, d) => x + d.tokens, 0), weekCalls = s.days.reduce((x, d) => x + d.calls, 0);
+  const kpi = (v, l, n = "") => `<div class="card kpi"><div class="v">${v}</div><div class="l">${esc(l)}</div><div class="n">${n}</div></div>`;
+  const bucket = (list) => list.map((b) => `<div class="item"><div class="ellipsis" style="flex:1"><b>${esc(b.name)}</b><div class="tiny muted">${num(b.sessions)} sesi · ${num(b.calls)} panggilan</div></div><span class="mono small">${fmtTok(b.tokens)}</span></div>`).join("") || '<div class="muted small">–</div>';
+  const recent = s.recent.map((x) => `<div class="item"><span class="dot ${x.active ? "ok" : ""}"></span><div class="ellipsis" style="flex:1"><b>${esc(x.title)}</b>
+      <div class="tiny muted ellipsis">${esc(x.source)} · ${esc(x.model)} · ${num(x.messages)} pesan · ${num(x.toolCalls)} tool</div></div>
+      <span class="small muted">${fmtTok(x.input + x.cacheRead + x.output)} · ${ago(x.lastActivity || x.startedAt)}</span></div>`).join("");
+  return head("Agents & Token", "Sesi dan pemakaian token Hermes di server ini (dibaca langsung dari state.db, hanya baca)", sel +
+      `<button class="btn" data-act="agentsReload">↻ Refresh</button>`) +
+    `<div class="grid g4" style="margin-bottom:16px">
+      ${kpi(fmtTok(s.today.tokens), "Token hari ini", `${num(s.today.calls)} panggilan API`)}
+      ${kpi(fmtTok(week), "Token 7 hari", `${num(weekCalls)} panggilan`)}
+      ${kpi(num(s.allTime.sessions), "Sesi total", `${fmtTok(s.allTime.input + s.allTime.cacheRead + s.allTime.output)} token sepanjang waktu`)}
+      ${kpi(s.allTime.cost ? "$" + s.allTime.cost.toFixed(2) : "–", "Biaya tercatat", `state.db ${bytes(s.dbBytes)}`)}
+    </div>
+    <div class="card" style="margin-bottom:16px"><h2>Token per hari · 7 hari</h2>${barsChart(s.days, "tokens", "var(--violet)")}</div>
+    <div class="grid g2">
+      <div class="card"><h2>Sesi terbaru</h2><div class="list">${recent || '<div class="muted">Belum ada sesi.</div>'}</div></div>
+      <div class="stack"><div class="card"><h2>Per sumber · 7 hari</h2><div class="list">${bucket(s.sources)}</div></div>
+        <div class="card"><h2>Per model · 7 hari</h2><div class="list">${bucket(s.models)}</div></div></div>
+    </div>`;
+}
+
+// ── OmniRoute ──
+async function loadOmni(force) {
+  if (!force && S.omni && Date.now() - S.omni.fetched < 20000) return;
+  try { S.omni = { ...(await api("GET", "/api/omniroute")), fetched: Date.now() }; } catch (e) { S.omni = { state: "error", error: e.message, fetched: Date.now() }; }
+  if (S.route === "omniroute") $("#main").innerHTML = omniroute();
+}
+function omniroute() {
+  const o = S.omni;
+  if (!o) return head("OmniRoute", "Memuat…");
+  const open = o.dashboard ? `<a class="btn" href="${esc(o.dashboard)}" target="_blank" rel="noopener noreferrer">↗ Buka dashboard</a>` : "";
+  const actions = open + `<button class="btn" data-act="omniReload">↻ Refresh</button>`;
+  if (o.state !== "ok") {
+    const msg = { noKey: "Belum ada API key OmniRoute di server ini.", denied: "API key OmniRoute ditolak.", idle: "Memuat…", error: "OmniRoute tidak terjangkau." }[o.state] || o.state;
+    return head("OmniRoute", esc(o.base || ""), actions) + `<div class="card"><p><b>${esc(msg)}</b></p>
+      ${(o.tried || []).map((t) => `<div class="small mono muted">• ${esc(t.source)}: ${esc(t.result)}</div>`).join("")}
+      <p class="small muted">Server membaca key dari <span class="mono">OMNIROUTE_API_KEY</span> (atau key OmniRoute milik Hermes) di <span class="mono">~/.hermes/.env</span>. Key tidak pernah dikirim ke browser.</p></div>`;
+  }
+  const st = (x) => (x === "healthy" ? "ok" : x === "degraded" ? "warn" : x === "down" ? "bad" : "");
+  const u = o.usage || {};
+  const kpi = (v, l, n = "", cls = "") => `<div class="card kpi"><div class="v ${cls}">${v}</div><div class="l">${esc(l)}</div><div class="n">${n}</div></div>`;
+  const metrics = (o.metrics || []).map((m) => `<div class="item"><span class="dot ${st(m.state)}"></span><div class="ellipsis" style="flex:1"><b>${esc(m.provider)}</b>
+      <div class="tiny muted">${num(m.requests)} request · ${m.latency ? m.latency + " ms" : "–"}${m.lastAt ? " · terakhir " + esc(dt(Date.parse(m.lastAt) / 1000)) : ""}</div></div>
+      <span class="small mono">${m.successRate != null ? Number(m.successRate).toFixed(0) + "%" : "–"}</span></div>`).join("");
+  const conns = (o.connections || []).map((c) => `<div class="item"><span class="dot ${c.active ? (c.lastError ? "warn" : "ok") : ""}"></span><div class="ellipsis" style="flex:1"><b>${esc(c.name)}</b>
+      <div class="tiny ${c.lastError ? "amber" : "muted"} ellipsis">${esc(c.provider)}${c.lastError ? " · " + esc(c.lastError) : ""}</div></div><span class="chip ${c.active ? "ok" : ""}">${c.active ? "aktif" : "nonaktif"}</span></div>`).join("");
+  const quotas = (o.quotas || []).filter((q) => q.windows.length).map((q) => `<div class="item" style="align-items:flex-start"><div style="flex:1;min-width:0"><b>${esc(q.account)}</b> <span class="tiny muted">${esc(q.provider)}${q.plan ? " · " + esc(q.plan) : ""}</span>
+      ${q.windows.map((w) => `<div class="row small" style="margin-top:4px"><span class="ellipsis" style="width:140px;flex:none">${esc(w.label)}</span>
+        <div class="meter ${w.remaining < 10 ? "bad" : w.remaining < 30 ? "warn" : "ok"}" style="flex:1"><i style="width:${Math.max(2, w.remaining)}%"></i></div><span class="mono tiny" style="width:44px;text-align:right">${Math.round(w.remaining)}%</span></div>`).join("")}</div></div>`).join("");
+  return head("OmniRoute", `Gateway AI di ${esc(o.base)} · diperbarui ${ago(o.at)}`, actions) +
+    `<div class="grid g4" style="margin-bottom:16px">
+      ${kpi(`${o.healthy}/${o.healthy + o.degraded + o.down}`, "Provider sehat", `${o.degraded} turun performa · ${o.down} down`, o.down ? "red" : "")}
+      ${kpi(num(u.requests), "Request", u.since ? "sejak " + esc(day(Date.parse(u.since) / 1000)) : "")}
+      ${kpi(fmtTok(u.tokens || 0), "Token", u.cost ? "$" + Number(u.cost).toFixed(2) : "")}
+      ${kpi(u.successRate != null ? Number(u.successRate).toFixed(1) + "%" : "–", "Sukses", u.latency ? Math.round(u.latency) + " ms rata-rata" : "")}
+    </div>
+    ${(o.days || []).length ? `<div class="card" style="margin-bottom:16px"><h2>Request per hari</h2>${barsChart(o.days, "requests", "var(--blue)")}</div>` : ""}
+    <div class="grid g2"><div class="card"><h2>Provider</h2><div class="list">${metrics || '<div class="muted small">–</div>'}</div></div>
+      <div class="stack">${quotas ? `<div class="card"><h2>Sisa kuota</h2><div class="list">${quotas}</div></div>` : ""}
+      <div class="card"><h2>Koneksi</h2><div class="list">${conns || '<div class="muted small">–</div>'}</div></div></div></div>`;
+}
+
+// ── Files (read-only) ──
+async function loadFiles() {
+  const f = S.files || (S.files = { node: S.state.nodes[0] && S.state.nodes[0].id, path: "~" });
+  if (f.loaded === `${f.node}|${f.path}|${f.view || ""}`) return;
+  f.loaded = `${f.node}|${f.path}|${f.view || ""}`;
+  try {
+    f.list = await api("GET", `/api/files?node=${encodeURIComponent(f.node)}&path=${encodeURIComponent(f.path)}`);
+    f.file = f.view ? await api("GET", `/api/file?node=${encodeURIComponent(f.node)}&path=${encodeURIComponent(f.view)}`) : null;
+  } catch (e) { f.list = { error: e.message }; }
+  if (S.route === "files") $("#main").innerHTML = filesPage();
+}
+function filesPage() {
+  const f = S.files || { node: S.state.nodes[0] && S.state.nodes[0].id, path: "~" };
+  const nodeSel = `<select id="fileNode">${S.state.nodes.map((n) => `<option value="${esc(n.id)}" ${n.id === f.node ? "selected" : ""}>${esc(n.name)}</option>`).join("")}</select>`;
+  const quick = ["~", "/etc", "/var/log", "/srv", "/opt", "~/.hermes"].map((p) => `<button class="btn sm" data-act="fgo" data-v="${esc(p)}">${esc(p)}</button>`).join("");
+  const l = f.list;
+  let list = '<div class="muted">Memuat…</div>';
+  if (l && l.error) list = `<div class="red small">${esc(l.error)}</div>`;
+  else if (l && l.items) {
+    const up = l.path !== "/" ? `<div class="item click" data-act="fgo" data-v="${esc(l.parent)}"><span class="ico">↰</span><b>..</b></div>` : "";
+    list = up + l.items.map((it) => {
+      const full = (l.path.endsWith("/") ? l.path : l.path + "/") + it.name;
+      if (it.secret) return `<div class="item"><span>🔒</span><span class="ellipsis muted" style="flex:1">${esc(it.name)}</span><span class="tiny muted">disembunyikan</span></div>`;
+      return `<div class="item click" data-act="${it.dir ? "fgo" : "fview"}" data-v="${esc(full)}"><span>${it.dir ? "▸" : "·"}</span><span class="ellipsis" style="flex:1">${esc(it.name)}${it.link ? ' <span class="tiny muted">↪</span>' : ""}</span>
+        <span class="tiny muted hide-sm">${it.dir ? "" : bytes(it.size)}</span><span class="tiny muted">${ago(it.mtime)}</span></div>`;
+    }).join("");
+  }
+  const v = f.file;
+  const viewer = !f.view ? "" : !v ? '<div class="muted">Memuat…</div>' : v.error ? `<div class="red small">${esc(v.error)}</div>`
+    : v.binary ? `<div class="muted small">File biner (${bytes(v.size)}) — tidak ditampilkan.</div>`
+    : `${v.truncated ? `<div class="amber small">Hanya 512 KB pertama dari ${bytes(v.size)}.</div>` : ""}<pre class="mono viewer">${esc(v.text)}</pre>`;
+  return head("File", "Hanya baca, sebagai user biasa. File yang biasanya berisi rahasia (.env, key, token) tidak ditampilkan.", nodeSel) +
+    `<div class="row wrap" style="margin-bottom:12px">${quick}</div>
+    <div class="grid ${f.view ? "g2" : ""}"><div class="card"><div class="small mono muted ellipsis" style="margin-bottom:8px">${esc(l && l.path || f.path)}</div><div class="list files">${list}</div></div>
+    ${f.view ? `<div class="card"><div class="row"><b class="mono small ellipsis" style="flex:1">${esc(f.view)}</b><button class="btn sm" data-act="fclose">Tutup</button></div>${viewer}</div>` : ""}</div>`;
 }
 
 // ── Workspace: portfolio ──
@@ -565,6 +689,11 @@ document.addEventListener("click", (e) => {
   else if (act === "editProject") projectDialog(S.ws.projects.find((p) => p.id === v));
   else if (act === "newTask") taskDialog(null, v);
   else if (act === "task") taskDialog(S.ws.tasks.find((t) => t.id === v));
+  else if (act === "agentsReload") loadAgents(true);
+  else if (act === "omniReload") { api("POST", "/api/omniroute").catch(() => {}); setTimeout(() => loadOmni(true), 4000); toast("Memuat OmniRoute…"); }
+  else if (act === "fgo") { S.files.path = v; S.files.view = null; S.files.file = null; render(); }
+  else if (act === "fview") { S.files.view = v; S.files.file = null; render(); }
+  else if (act === "fclose") { S.files.view = null; S.files.file = null; render(); }
 });
 document.addEventListener("toggle", (e) => { const id = e.target.dataset && e.target.dataset.open; if (id) S.filters["open:" + id] = e.target.open; }, true);
 document.addEventListener("input", (e) => { if (e.target.id === "jobq") { S.filters.jobq = e.target.value; render(); } });
@@ -572,6 +701,8 @@ document.addEventListener("change", (e) => {
   if (e.target.id === "pfSel") { S.filters.pf = e.target.value; render(); }
   if (e.target.id === "lcSel") { S.filters.lc = e.target.value; render(); }
   if (e.target.id === "assigneeSel") { S.filters.assignee = e.target.value; render(); }
+  if (e.target.id === "profileSel") { S.filters.profile = e.target.value; loadAgents(true); }
+  if (e.target.id === "fileNode") { S.files = { node: e.target.value, path: "~" }; render(); }
 });
 document.addEventListener("submit", async (e) => {
   const f = e.target.closest("form[data-quick]");

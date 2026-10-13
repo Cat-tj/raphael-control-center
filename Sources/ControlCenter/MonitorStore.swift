@@ -126,6 +126,7 @@ final class MonitorStore: ObservableObject {
     private var raw: [String: (t: Double, rx: Double, tx: Double, req: Double?)] = [:]
     private var lastSlow: [String: Double] = [:]
     private var failures: [String: Int] = [:]
+    private var lastWebSample: [String: Double] = [:]
     private var timer: Timer?
     private var lastSave = Date()
     private var lastSiteCheck = Date.distantPast
@@ -175,12 +176,25 @@ final class MonitorStore: ObservableObject {
         guard !sampling.contains(node.id) else { return }
         sampling.insert(node.id)
         defer { sampling.remove(node.id) }
-        let now = Date().timeIntervalSince1970
-        let slow = now - (lastSlow[node.id] ?? 0) > 1800        // apt + ssh log checks every 30 min
-        let script = (node.isLocal ? Self.macScript : Self.linuxScript).replacingOccurrences(of: "__SLOW__", with: slow ? "1" : "0")
-        let r = await NodeStore.run(node: node, script: script, timeout: 25)
-        guard let line = r.output.split(separator: "\n").last(where: { $0.hasPrefix("{") }),
-              let j = try? JSONSerialization.jsonObject(with: Data(line.utf8)) as? [String: Any] else {
+        var now = Date().timeIntervalSince1970
+        var slow = now - (lastSlow[node.id] ?? 0) > 1800        // apt + ssh log checks every 30 min
+        var j: [String: Any]?
+        var output = ""
+        // Raphael Web already samples this device: reuse its sample instead of running the collector twice.
+        if !node.isLocal, let web = await Self.webSample(node.id) {
+            if web.at <= (lastWebSample[node.id] ?? 0) { return }                 // nothing new since last time
+            lastWebSample[node.id] = web.at
+            j = web.raw; now = web.at; slow = web.raw["updates"] != nil
+        } else {
+            let script = (node.isLocal ? Self.macScript : Self.linuxScript).replacingOccurrences(of: "__SLOW__", with: slow ? "1" : "0")
+            let r = await NodeStore.run(node: node, script: script, timeout: 25)
+            output = r.output
+            if let line = r.output.split(separator: "\n").last(where: { $0.hasPrefix("{") }) {
+                j = try? JSONSerialization.jsonObject(with: Data(line.utf8)) as? [String: Any]
+            }
+        }
+        guard let j else {
+            let r = (output: output, exitCode: Int32(0))
             failures[node.id, default: 0] += 1
             var d = detail[node.id] ?? MDetail()
             d.error = r.output.isEmpty ? "Tidak terhubung" : String(r.output.suffix(160)).trimmingCharacters(in: .whitespacesAndNewlines)
@@ -192,6 +206,7 @@ final class MonitorStore: ObservableObject {
         if slow { lastSlow[node.id] = now }
         let (s, d) = Self.parse(j, previous: detail[node.id], slow: slow)
         var sample = s
+        sample.t = now
         // Rates from the previous raw counters.
         let rx = (j["rx"] as? NSNumber)?.doubleValue ?? 0, tx = (j["tx"] as? NSNumber)?.doubleValue ?? 0
         let req = d.tunnel?.total
@@ -221,6 +236,25 @@ final class MonitorStore: ObservableObject {
             lastCPU[key] = (now, sv.cpuNs)
             record(key, MPoint(t: now, cpu: cpu, mem: sv.mem))
         }
+    }
+
+    /// Raphael Web base URL (e.g. https://host.tailnet.ts.net:8787), empty = always sample over SSH.
+    static var webURL: String {
+        get { UserDefaults.standard.string(forKey: "raphaelWebURL") ?? "" }
+        set { UserDefaults.standard.set(newValue.trimmingCharacters(in: .whitespaces), forKey: "raphaelWebURL") }
+    }
+
+    /// The device's latest raw collector output from Raphael Web, if it is fresh (< 3 min).
+    nonisolated static func webSample(_ nodeId: String) async -> (at: Double, raw: [String: Any])? {
+        let base = await MainActor.run { webURL }
+        guard !base.isEmpty, var comps = URLComponents(string: base.hasSuffix("/") ? String(base.dropLast()) + "/api/raw" : base + "/api/raw") else { return nil }
+        comps.queryItems = [URLQueryItem(name: "node", value: nodeId)]
+        guard let url = comps.url, let (data, resp) = try? await URLSession.shared.data(for: URLRequest(url: url, timeoutInterval: 6)),
+              (resp as? HTTPURLResponse)?.statusCode == 200,
+              let j = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let at = (j["at"] as? NSNumber)?.doubleValue, let raw = j["raw"] as? [String: Any],
+              Date().timeIntervalSince1970 - at < 180 else { return nil }
+        return (at, raw)
     }
 
     private func record(_ key: String, _ p: MPoint) {

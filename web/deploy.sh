@@ -20,7 +20,7 @@ python3 -m unittest discover -s web/tests 2>&1 | tail -1 | grep -q '^OK' || { ec
 echo "✓ tests"
 
 ssh -o BatchMode=yes "$HOST" 'mkdir -p ~/raphael-web/app ~/.config/raphael-web ~/.config/systemd/user'
-COPYFILE_DISABLE=1 tar --no-xattrs -C web -czf - server.py core.py workspace.py static build | ssh -o BatchMode=yes "$HOST" 'rm -rf ~/raphael-web/app.new && mkdir ~/raphael-web/app.new && tar -C ~/raphael-web/app.new -xzf - && rm -rf ~/raphael-web/app.old && { [ -d ~/raphael-web/app ] && mv ~/raphael-web/app ~/raphael-web/app.old; true; } && mv ~/raphael-web/app.new ~/raphael-web/app'
+COPYFILE_DISABLE=1 tar --no-xattrs -C web -czf - $(cd web && ls *.py) static build | ssh -o BatchMode=yes "$HOST" 'rm -rf ~/raphael-web/app.new && mkdir ~/raphael-web/app.new && tar -C ~/raphael-web/app.new -xzf - && rm -rf ~/raphael-web/app.old && { [ -d ~/raphael-web/app ] && mv ~/raphael-web/app ~/raphael-web/app.old; true; } && mv ~/raphael-web/app.new ~/raphael-web/app'
 echo "✓ copied (previous version kept in ~/raphael-web/app.old)"
 
 if [ -f web/config.local.json ]; then

@@ -10,6 +10,9 @@ The Control Center's Monitor and Workspace as a small web app for an always-on L
 | Website | HTTP status, response time, 24 h uptime, SSL expiry — configured sites plus every Cloudflare Tunnel hostname found |
 | Cron & job | crontab, /etc/cron.d, systemd timers and Hermes cron jobs with last/next run, failures and missed runs |
 | Traffic | Cloudflare Tunnel counters (from cloudflared) and Cloudflare Analytics (7 days, when a token with Analytics read is available) |
+| File | read-only browser for every device (as the service user, no sudo); files that usually hold secrets (`.env`, keys, tokens, `~/.ssh`) are refused, also through symlinks |
+| Agents & Token | Hermes sessions and token use per profile, read-only from `state.db` (same queries as the Mac app) |
+| OmniRoute | provider health, usage, quotas and connections (API key read on the server from the configured `.env`) |
 | Portfolio · project board · tasks · activity | the workspace: portfolios, projects, Kanban with drag & drop, task details |
 
 ## How it fits with the Mac app
@@ -17,6 +20,9 @@ The Control Center's Monitor and Workspace as a small web app for an always-on L
 - **Same collector.** `extract.py` copies `MonitorStore.linuxScript` out of the Swift source at
   deploy time, so both apps read devices identically. Job, alert and parsing rules in
   `core.py` are ported from `Jobs.swift` / `MonitorStore.swift` and tested on the same cases.
+- **One collector run per device.** In the Mac app, Monitor → Sumber data → *Raphael Web* takes
+  the URL; the Mac then reuses Raphael Web's latest sample (`/api/raw`) for those devices instead
+  of SSH-ing in every minute, and falls back to SSH when Raphael Web doesn't answer.
 - **Same workspace format.** The schema is extracted from `WorkspaceSchema.swift`; a
   `workspace.sqlite` moves between the Mac app and Raphael Web unchanged. Today each keeps its
   own file (no sync yet).

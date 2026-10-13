@@ -210,3 +210,9 @@ dialog .foot { display: flex; gap: 8px; justify-content: flex-end; margin-top: 6
   .card { padding: 14px; }
   .hide-sm { display: none; }
 }
+
+/* Files */
+.list.files .item { padding: 6px 4px; }
+.list .item.click { cursor: pointer; border-radius: 8px; }
+.list .item.click:hover { background: var(--wash); }
+pre.viewer { margin: 10px 0 0; padding: 12px; background: var(--wash); border-radius: 10px; font-size: 12px; line-height: 1.5; max-height: 70vh; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; }
