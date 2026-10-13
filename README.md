@@ -47,9 +47,10 @@ doesn't ask again after every build.
 ## Raphael Web
 
 [`web/`](web/README.md) runs the Monitor (servers, websites, cron jobs, traffic) and the
-Workspace (portfolios, projects, Kanban) as a small web app on an always-on Linux box, such as
-a Raspberry Pi, reachable from any device on your tailnet. Python standard library only; it
-uses the same collector and workspace schema as the Mac app.
+Workspace (portfolios, projects, Kanban), alerts, incidents and backups as a small web app on an
+always-on Linux box, such as a Raspberry Pi, reachable from any device on your tailnet. The server
+is a single Rust binary (a Python reference implementation is kept as fallback); it uses the same
+collector and workspace schema as the Mac app, and the Mac app can sync its workspace with it.
 
 ```
 web/deploy.sh user@host 8787

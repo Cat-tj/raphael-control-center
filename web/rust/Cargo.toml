@@ -1,0 +1,28 @@
+[package]
+name = "raphael-web"
+version = "0.2.0"
+edition = "2021"
+description = "Raphael Web: the Control Center's monitor, operations and workspace server (Rust port of web/server.py)"
+license = "MIT"
+publish = false
+
+[dependencies]
+tiny_http = "0.12"
+rusqlite = { version = "0.32", features = ["bundled", "hooks"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+ureq = { version = "2", default-features = false, features = ["tls", "json"] }
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
+webpki-roots = "0.26"
+x509-parser = "0.16"
+chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
+regex = "1"
+glob = "0.3"
+uuid = { version = "1", features = ["v4"] }
+
+[profile.release]
+opt-level = "s"
+lto = true
+codegen-units = 1
+strip = true
+panic = "unwind"

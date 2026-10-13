@@ -1,7 +1,19 @@
 # Raphael Web
 
 The Control Center's Monitor and Workspace as a small web app for an always-on Linux box
-(built for a Raspberry Pi 4). Python standard library only: no pip, no Node, no build step.
+(built for a Raspberry Pi 4).
+
+Two implementations of the same server, same API, same data files:
+
+- **Rust** (`rust/`, default): one ~5 MB static-ish binary, ~20 MB RAM on the Pi.
+  Cross-compiled on the Mac with `cargo zigbuild --target aarch64-unknown-linux-gnu.2.36`.
+- **Python** (`server.py` and friends, stdlib only): kept as the reference and fallback.
+
+`tests/test_web.py` holds the HTTP contract; with `RAPHAEL_WEB_BIN=…/raphael-web` it runs against
+the Rust binary, and `deploy.sh` refuses to ship a Rust build that fails it. The Rust unit tests
+(`cargo test`) cover the same cron, job, alert, incident, action, backup and workspace cases as the
+Python ones. Scripts that run on the devices are shared files: `build/collector_linux.sh`
+(extracted from the Swift app), `remote/health.py`, `remote/files.py`.
 
 | Page | What it shows |
 |---|---|
@@ -53,7 +65,8 @@ containers and job log files are read-only.
 python3 web/extract.py                                  # build/collector_linux.sh + build/schema_v1.sql
 python3 -m unittest discover -s web/tests               # tests
 python3 web/server.py --config path/to/config.json      # http://127.0.0.1:8790
-web/deploy.sh user@host 8787                            # tests, copy, systemd user service, tailscale serve
+web/deploy.sh user@host 8787                            # tests (python, rust, contract), cross-compile, deploy
+RAPHAEL_WEB_IMPL=python web/deploy.sh user@host 8787    # run the Python server instead (rollback)
 ```
 
 `config.example.json` shows the config (devices: `local` or an `ssh` target/alias; websites;

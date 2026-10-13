@@ -237,19 +237,42 @@ def free_port():
 
 
 class Http(unittest.TestCase):
+    """The HTTP contract. Runs against the Python server, or against another implementation
+    (the Rust binary) when RAPHAEL_WEB_BIN points at it."""
+
     @classmethod
     def setUpClass(cls):
         d = tempfile.mkdtemp()
         cfg = {"port": free_port(), "data": d, "nodes": [{"id": "local", "name": "Test", "local": True}],
                "sites": [{"name": "x", "url": "https://example.invalid"}], "envFiles": []}
-        cls.app = server.App(cfg)
-        cls.srv = server.ThreadingHTTPServer(("127.0.0.1", cfg["port"]), server.make_handler(cls.app))
-        threading.Thread(target=cls.srv.serve_forever, daemon=True).start()
         cls.base = f"http://127.0.0.1:{cfg['port']}"
+        cls.external = os.environ.get("RAPHAEL_WEB_BIN")
+        if cls.external:
+            import subprocess
+            path = os.path.join(d, "config.json")
+            with open(path, "w") as f:
+                json.dump(cfg, f)
+            cls.proc = subprocess.Popen([cls.external, "--config", path, "--no-sampling", "--static", os.path.join(WEB, "static")],
+                                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            for _ in range(100):
+                try:
+                    urllib.request.urlopen(cls.base + "/healthz", timeout=1)
+                    break
+                except Exception:
+                    time.sleep(0.05)
+            cls.app = None
+        else:
+            cls.app = server.App(cfg)
+            cls.srv = server.ThreadingHTTPServer(("127.0.0.1", cfg["port"]), server.make_handler(cls.app))
+            threading.Thread(target=cls.srv.serve_forever, daemon=True).start()
 
     @classmethod
     def tearDownClass(cls):
-        cls.srv.shutdown()
+        if cls.external:
+            cls.proc.terminate()
+            cls.proc.wait(5)
+        else:
+            cls.srv.shutdown()
 
     def req(self, method, path, body=None, headers=None):
         h = {"X-Raphael": "1", "Content-Type": "application/json"} if headers is None else headers
@@ -296,9 +319,10 @@ class Http(unittest.TestCase):
 
     def test_new_endpoints(self):
         self.assertEqual(self.req("GET", "/api/raw?node=local", headers={})[0], 404)          # nothing sampled yet
-        self.app.monitor.raw_line["local"] = {"at": 1, "raw": {"cpu": 0.1}}
-        code, r, _ = self.req("GET", "/api/raw?node=local", headers={})
-        self.assertEqual((code, r["raw"]["cpu"]), (200, 0.1))
+        if self.app:
+            self.app.monitor.raw_line["local"] = {"at": 1, "raw": {"cpu": 0.1}}
+            code, r, _ = self.req("GET", "/api/raw?node=local", headers={})
+            self.assertEqual((code, r["raw"]["cpu"]), (200, 0.1))
         code, r, _ = self.req("GET", "/api/files?node=local&path=" + urllib.request.quote(WEB), headers={})
         self.assertIn("server.py", [i["name"] for i in r["items"]])
         self.assertEqual(self.req("GET", "/api/files?node=nope&path=/", headers={})[0], 404)
