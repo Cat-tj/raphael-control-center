@@ -1,0 +1,11 @@
+{
+  "port": 8790,
+  "nodes": [
+    { "id": "this-box", "name": "Server ini", "local": true, "description": "the machine running Raphael Web" },
+    { "id": "other-box", "name": "Server lain", "ssh": "user@host-or-ssh-alias" }
+  ],
+  "sites": [
+    { "name": "Website", "url": "https://example.com" }
+  ],
+  "envFiles": ["~/.hermes/.env"]
+}

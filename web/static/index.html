@@ -1,0 +1,35 @@
+<!doctype html>
+<html lang="id">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="color-scheme" content="light dark">
+<title>Raphael Web</title>
+<link rel="icon" href="icon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="app.css">
+</head>
+<body>
+<div class="shell">
+  <aside class="side" id="side">
+    <div class="brand">
+      <img src="icon.svg" alt="" width="34" height="34">
+      <div><b>RAPHAEL</b><span>Web · Control Center</span></div>
+    </div>
+    <nav id="nav"></nav>
+    <div class="side-foot">
+      <div class="theme" role="group" aria-label="Tema">
+        <button data-theme="auto" title="Ikuti sistem">◐</button>
+        <button data-theme="light" title="Terang">☀</button>
+        <button data-theme="dark" title="Gelap">☾</button>
+      </div>
+      <div class="me" id="me"></div>
+    </div>
+  </aside>
+  <main id="main" tabindex="-1"></main>
+</div>
+<button class="menu-btn" id="menuBtn" aria-label="Menu">☰</button>
+<div class="toast" id="toast" role="status" aria-live="polite"></div>
+<dialog id="dlg"></dialog>
+<script src="app.js"></script>
+</body>
+</html>

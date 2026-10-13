@@ -44,6 +44,17 @@ Optional: create a code-signing certificate named **Raphael Local** (Keychain Ac
 Certificate Assistant → Create a Certificate…, type *Code Signing*) so the Keychain
 doesn't ask again after every build.
 
+## Raphael Web
+
+[`web/`](web/README.md) runs the Monitor (servers, websites, cron jobs, traffic) and the
+Workspace (portfolios, projects, Kanban) as a small web app on an always-on Linux box, such as
+a Raspberry Pi, reachable from any device on your tailnet. Python standard library only; it
+uses the same collector and workspace schema as the Mac app.
+
+```
+web/deploy.sh user@host 8787
+```
+
 ## Optional companions
 
 The app works with whatever it finds and greys out what is missing:
