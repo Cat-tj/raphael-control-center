@@ -7,13 +7,14 @@ you are on), the websites and apps on them, cron jobs and backups, a
 and a Kanban board. Alerts reach you as WhatsApp messages (through Hermes) and desktop
 notifications.
 
-**Windows, Linux and macOS.** Written in Rust. No telemetry; network calls go only to your own
-devices and the services you configure.
+A native **macOS** menu bar app (SwiftUI + AppKit) plus **Raphael Web**, a small Rust server for
+an always-on box that every device can open in a browser. No telemetry; network calls go only
+to your own devices and the services you configure.
 
 ```
-desktop/   the app (Tauri): window + tray icon + notifications, Windows / Linux / macOS
-web/       the server (Rust; Python reference) and the web UI the app and browsers show
-legacy/    the original native macOS app (Swift), kept while features are ported
+Sources/   the macOS app (Swift) — build with scripts/build.sh
+web/       Raphael Web: the server (Rust; Python reference) and its web UI
+desktop/   experimental cross-platform shell (Tauri) around the web UI
 ```
 
 ## How it fits together
@@ -46,9 +47,16 @@ legacy/    the original native macOS app (Swift), kept while features are ported
 | File | read-only browser for every device (secrets refused) |
 | Agents & Token · OmniRoute | Hermes sessions and tokens; OmniRoute providers, usage and quotas |
 
-## Install
+## Build the macOS app
 
-Download the installer for your system from the latest
+```bash
+scripts/build.sh --install   # → ~/Applications/Raphael Control Center.app
+scripts/test.sh              # workspace + cron tests
+```
+
+## Experimental desktop shell (Windows / Linux)
+
+Installers from the latest
 [release](https://github.com/Cat-tj/raphael-control-center/releases) or the
 [Desktop app workflow](https://github.com/Cat-tj/raphael-control-center/actions/workflows/desktop.yml)
 artifacts: `.msi` / `.exe` (Windows), `.deb` / `.AppImage` (Linux), `.dmg` (macOS). Builds are not
