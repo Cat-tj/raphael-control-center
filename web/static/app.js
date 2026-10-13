@@ -11,7 +11,7 @@ const LIFECYCLES = [["idea", "Idea"], ["planned", "Planned"], ["building", "Buil
 const PRIO = ["Tanpa", "Low", "Medium", "High", "Urgent"];
 
 const NAV = [
-  ["Ringkasan", [["overview", "⌂", "Overview"]]],
+  ["Ringkasan", [["overview", "⌂", "Overview"], ["incidents", "⚑", "Insiden"], ["notify", "✉", "Notifikasi"]]],
   ["Workspace", [["portfolio", "▦", "Portfolio"], ["tasks", "☑", "Semua task"], ["activity", "↻", "Activity"]]],
   ["Operations", [["servers", "▤", "Server"], ["websites", "◎", "Website"], ["jobs", "◷", "Cron & job"], ["traffic", "↗", "Traffic"], ["files", "▱", "File"]]],
   ["Intelligence", [["agents", "◈", "Agents & Token"], ["omniroute", "⇄", "OmniRoute"]]],
@@ -121,7 +121,8 @@ function counts() {
 function renderNav() {
   const c = counts();
   const om = S.state && S.state.omniroute;
-  const badge = { overview: c.bad, websites: c.sitesDown, jobs: c.jobs, servers: c.nodesDown, omniroute: om && om.state === "ok" ? om.down : 0 };
+  const badge = { overview: c.bad, websites: c.sitesDown, jobs: c.jobs, servers: c.nodesDown, omniroute: om && om.state === "ok" ? om.down : 0,
+    incidents: S.state ? (S.state.openIncidents || []).length : 0 };
   $("#nav").innerHTML = NAV.map(([g, items]) => `<div class="group">${esc(g)}</div>` + items.map(([id, ico, title]) => {
     const on = S.route === id || (id === "portfolio" && S.route === "project");
     const b = badge[id] ? `<span class="badge${id === "jobs" ? " warn" : ""}">${badge[id]}</span>` : "";
@@ -139,7 +140,7 @@ function render() {
   const main = $("#main");
   if (!S.state && !S.error) { main.innerHTML = `<div class="empty"><b>Memuat…</b></div>`; return; }
   if (S.error && !S.state) { main.innerHTML = `<div class="empty"><b>Server tidak menjawab</b>${esc(S.error)}</div>`; return; }
-  const pages = { overview, servers, websites, jobs, traffic, files: filesPage, agents, omniroute, portfolio, project, tasks, activity };
+  const pages = { overview, incidents, notify: notifyPage, servers, websites, jobs, traffic, files: filesPage, agents, omniroute, portfolio, project, tasks, activity };
   const keep = document.activeElement && document.activeElement.id ? document.activeElement.id : null;
   const scroll = window.scrollY;
   main.innerHTML = (pages[S.route] || overview)();
@@ -150,6 +151,8 @@ function render() {
   if (S.route === "agents") loadAgents();
   if (S.route === "omniroute") loadOmni();
   if (S.route === "files") loadFiles();
+  if (S.route === "incidents") loadIncidents();
+  if (S.route === "notify") loadNotify();
 }
 
 // ── Overview ──
@@ -178,10 +181,22 @@ function overview() {
     <div class="grid g2">
       <div class="card"><h2>Perlu perhatian</h2>${alerts ? `<div class="list">${alerts}</div>` : `<div class="empty"><b>Tidak ada alert</b>Semua sinyal yang dipantau normal.</div>`}</div>
       <div class="stack">
+        ${(st.openIncidents || []).length ? `<div class="card"><h2>Insiden terbuka</h2><div class="list">${st.openIncidents.map((i) => `<div class="item"><span class="dot bad"></span><div class="ellipsis" style="flex:1"><b>${esc(i.title)}</b><div class="tiny muted ellipsis">${esc(i.detail || "")}</div></div><span class="small muted">sejak ${ago(i.started)}</span></div>`).join("")}</div><div class="small" style="margin-top:6px"><a href="#/incidents">Riwayat insiden →</a></div></div>` : ""}
         <div class="card"><h2>Device</h2><div class="list">${nodes}</div></div>
+        ${backupCard()}
         <div class="card"><h2>Website</h2><div class="list">${st.sites.map(siteLine).join("") || `<div class="muted">Belum ada website.</div>`}</div></div>
       </div>
     </div>`;
+}
+function backupCard() {
+  const b = S.state.backups || [];
+  if (!b.length) return "";
+  return `<div class="card"><h2>Backup</h2><div class="list">${b.map((x) => {
+    const f = x.latest;
+    return `<div class="item"><span class="dot ${x.problem ? "bad" : "ok"}"></span><div class="ellipsis" style="flex:1"><b>${esc(x.name)}</b>
+      <div class="tiny ${x.problem ? "red" : "muted"} ellipsis">${x.problem ? esc(x.problem) : f ? `terakhir ${ago(f[2])} · ${bytes(f[1])} · ${x.count} file` : ""}</div></div>
+      <span class="tiny muted">${esc(x.nodeName)} · batas ${x.maxAgeHours} jam</span></div>`;
+  }).join("")}</div></div>`;
 }
 function siteLine(s) {
   const st = s.status;
@@ -201,7 +216,7 @@ function hwSummary(d) {
 // ── Servers ──
 function servers() {
   const hours = S.filters.hours || 6;
-  const seg = [1, 6, 24].map((h) => `<button class="${hours === h ? "on" : ""}" data-act="hours" data-v="${h}">${h} jam</button>`).join("");
+  const seg = [1, 6, 24, 720].map((h) => `<button class="${hours === h ? "on" : ""}" data-act="hours" data-v="${h}">${h === 720 ? "30 hari" : h + " jam"}</button>`).join("");
   return head("Server", "Resource, container dan service di setiap device", `<div class="seg">${seg}</div>${refreshBtn}`) +
     `<div class="stack">${S.state.nodes.map(nodeCard).join("")}</div>`;
 }
@@ -211,13 +226,19 @@ function nodeCard(n) {
   if (d.error && !s) return `<div class="card node"><div class="row"><h3>${esc(n.name)}</h3><span class="chip bad">tidak terhubung</span></div><p class="muted mono small">${esc(d.error)}</p></div>`;
   const m = (label, v, cls, extra = "") => `<div><div class="v ${cls}">${v}</div><div class="l">${label}</div>${extra}</div>`;
   const temp = s && s.temp != null ? `${Math.round(s.temp)}°C` : "–";
+  const A = S.state.actions || {};
+  const cBtns = (c) => `<button class="btn sm" data-act="logs" data-node="${esc(n.id)}" data-kind="container" data-v="${esc(c.name)}">Log</button>` +
+    (A.containers ? ` <button class="btn sm" data-act="doAction" data-node="${esc(n.id)}" data-kind="restart-container" data-v="${esc(c.name)}">Restart</button>` : "");
+  const sBtns = (v) => `<button class="btn sm" data-act="logs" data-node="${esc(n.id)}" data-kind="service" data-v="${esc(v.unit)}">Log</button>` +
+    ` <button class="btn sm" data-act="doAction" data-node="${esc(n.id)}" data-kind="restart-service" data-v="${esc(v.unit)}">Restart</button>`;
   const containers = d.containers.map((c) => `<tr><td><span class="dot ${c.healthy ? "ok" : "bad"}"></span> <b>${esc(c.name)}</b>${c.project ? `<div class="tiny muted">${esc(c.project)}</div>` : ""}</td>
-      <td class="small">${esc(c.status)}</td><td class="small mono">${c.cpu.toFixed(1)}%</td><td class="small mono">${esc(c.mem)}</td><td class="small">${c.restarts > 3 ? `<span class="amber">${c.restarts}×</span>` : c.restarts || ""}</td></tr>`).join("");
+      <td class="small">${esc(c.status)}</td><td class="small mono">${c.cpu.toFixed(1)}%</td><td class="small mono">${esc(c.mem)}</td><td class="small">${c.restarts > 3 ? `<span class="amber">${c.restarts}×</span>` : c.restarts || ""}</td><td class="nw">${cBtns(c)}</td></tr>`).join("");
   const services = d.services.map((v) => `<tr><td><span class="dot ${v.running ? "ok" : "bad"}"></span> <b>${esc(v.name)}</b><div class="tiny muted">${esc(v.desc)}</div></td>
-      <td class="small">${esc(v.state)} · ${esc(v.sub)}</td><td class="small mono">${v.mem ? bytes(v.mem) : "–"}</td><td class="small">${v.restarts || ""}</td></tr>`).join("");
+      <td class="small">${esc(v.state)} · ${esc(v.sub)}</td><td class="small mono">${v.mem ? bytes(v.mem) : "–"}</td><td class="small">${v.restarts || ""}</td><td class="nw">${sBtns(v)}</td></tr>`).join("");
+  const failedSvc = (d.failed || []).map((f) => `<span class="chip bad">gagal: ${esc(f)}</span> <button class="btn sm" data-act="logs" data-node="${esc(n.id)}" data-kind="service" data-v="${esc(f)}">Log</button> <button class="btn sm" data-act="doAction" data-node="${esc(n.id)}" data-kind="restart-service" data-v="${esc(f)}">Restart</button>`).join(" ");
   const warn = [];
   if (d.error) warn.push(`<span class="chip bad">sampling terakhir gagal: ${esc(d.error)}</span>`);
-  (d.failed || []).forEach((f) => warn.push(`<span class="chip bad">gagal: ${esc(f)}</span>`));
+  if (failedSvc) warn.push(failedSvc);
   if (d.throttled && d.throttled !== "0x0") warn.push(`<span class="chip warn" title="vcgencmd get_throttled ${esc(d.throttled)}">⚡ ${esc(throttleText(d.throttled))}</span>`);
   if (d.securityUpdates) warn.push(`<span class="chip warn">${d.securityUpdates} update keamanan</span>`);
   if (d.rebootRequired) warn.push(`<span class="chip">perlu reboot</span>`);
@@ -231,14 +252,23 @@ function nodeCard(n) {
       ${m("Disk /", pct(d.disk), level(d.disk, .85, .93), `<div class="meter ${level(d.disk, .85, .93)}" style="margin-top:8px"><i style="width:${Math.round(d.disk * 100)}%"></i></div>`)}
       ${m(`Suhu · load ${s ? s.load.toFixed(2) : "–"}`, temp, s && s.temp ? level(s.temp, 70, 80) : "", `<div data-chart="${esc(n.id)}" data-k="temp"></div>`)}
     </div>
+    ${healthLine(n)}
     <div class="small muted">Jaringan: ↓ ${bytes(s && s.rx)}/s · ↑ ${bytes(s && s.tx)}/s${d.disks.length > 1 ? " · " + d.disks.filter((x) => x.mount !== "/").map((x) => `${esc(x.mount)} ${pct(x.used)}`).join(" · ") : ""}</div>
     ${containers || services ? `<details class="more"${S.filters["open:" + n.id] ? " open" : ""} data-open="${esc(n.id)}"><summary>${d.containers.length} container · ${d.services.length} service</summary>
-      <div class="scroll-x">${containers ? `<table class="tbl" style="margin-top:10px"><tr><th>Container</th><th>Status</th><th>CPU</th><th>RAM</th><th>Restart</th></tr>${containers}</table>` : ""}
-      ${services ? `<table class="tbl" style="margin-top:10px"><tr><th>Service</th><th>Status</th><th>RAM</th><th>Restart</th></tr>${services}</table>` : ""}</div></details>` : ""}
+      <div class="scroll-x">${containers ? `<table class="tbl" style="margin-top:10px"><tr><th>Container</th><th>Status</th><th>CPU</th><th>RAM</th><th>Restart</th><th></th></tr>${containers}</table>` : ""}
+      ${services ? `<table class="tbl" style="margin-top:10px"><tr><th>Service</th><th>Status</th><th>RAM</th><th>Restart</th><th></th></tr>${services}</table>` : ""}</div></details>` : ""}
   </div>`;
+}
+function healthLine(n) {
+  const h = n.health;
+  if (!h) return "";
+  const boot = h.uptime ? ago(Date.now() / 1000 - h.uptime) : "–";
+  const sd = h.rootRO ? '<span class="red">filesystem read-only!</span>' : h.mmcErrors ? `<span class="amber">${h.mmcErrors} error kartu SD sejak boot</span>` : '<span class="green">kartu SD tanpa error</span>';
+  return `<div class="small muted" style="margin-bottom:4px">Boot terakhir ${boot} · ${sd}</div>`;
 }
 async function drawHistory() {
   const hours = S.filters.hours || 6;
+  if (hours === 720) return draw30();
   for (const n of S.state.nodes) {
     const key = `${n.id}:${hours}`, cached = S.history[key];
     if (!cached || Date.now() - cached.at > 30000) {
@@ -250,6 +280,122 @@ async function drawHistory() {
       el.innerHTML = spark(samples.map((x) => x[k]), k === "temp" ? "var(--amber)" : k === "mem" ? "var(--blue)" : "var(--violet)", k === "temp" ? 90 : 1);
     }
   }
+}
+
+async function draw30() {
+  for (const n of S.state.nodes) {
+    const key = `${n.id}:30d`, cached = S.history[key];
+    if (!cached || Date.now() - cached.at > 300000) {
+      try { S.history[key] = { at: Date.now(), hours: (await api("GET", `/api/history30?node=${encodeURIComponent(n.id)}`)).hours }; } catch { continue; }
+    }
+    const rows = S.history[key].hours;
+    for (const el of $$(`[data-chart="${CSS.escape(n.id)}"]`)) {
+      const k = el.dataset.k;
+      if (!rows.length) { el.innerHTML = '<div class="tiny muted">mengumpulkan data per jam…</div>'; continue; }
+      const vals = rows.map((x) => x[k === "temp" ? "tempMax" : k === "mem" ? "memMax" : "cpuMax"]);
+      const thr = k === "temp" && rows.some((x) => x.thr) ? `<div class="tiny amber">throttle di ${rows.filter((x) => x.thr).length} dari ${rows.length} jam</div>` : "";
+      el.innerHTML = spark(vals, k === "temp" ? "var(--amber)" : k === "mem" ? "var(--blue)" : "var(--violet)", k === "temp" ? 90 : 1) + thr;
+    }
+  }
+}
+
+// ── Incidents ──
+const KIND = { site: "Website", node: "Server", temp: "Suhu", power: "Daya", disk: "Disk", job: "Job", ssl: "SSL", backup: "Backup", internet: "Internet", reboot: "Restart", sdcard: "Kartu SD" };
+async function loadIncidents(force) {
+  if (!force && S.inc && Date.now() - S.inc.at < 20000) return;
+  try {
+    const [a, b] = await Promise.all([api("GET", "/api/incidents?days=30"), api("GET", "/api/actionlog")]);
+    S.inc = { ...a, actions: b.log, at: Date.now() };
+  } catch (e) { S.inc = { error: e.message, at: Date.now() }; }
+  if (S.route === "incidents") $("#main").innerHTML = incidents();
+}
+function incidents() {
+  const x = S.inc;
+  if (!x) return head("Insiden", "Memuat…");
+  if (x.error) return head("Insiden", esc(x.error));
+  const kind = S.filters.ikind || "";
+  const list = x.incidents.filter((i) => !kind || i.kind === kind);
+  const kinds = [...new Set(x.incidents.map((i) => i.kind))];
+  const sel = `<select id="ikind"><option value="">Semua jenis</option>${kinds.map((k) => `<option value="${k}" ${k === kind ? "selected" : ""}>${esc(KIND[k] || k)}</option>`).join("")}</select>`;
+  const rows = list.map((i) => {
+    const open = !i.ended, dur = i.kind === "reboot" ? "" : (open ? "masih terbuka · " : "") + durText((i.ended || Date.now() / 1000) - i.started);
+    return `<div class="item" style="align-items:flex-start"><span class="dot ${open ? "bad" : i.kind === "reboot" ? "warn" : "ok"}" style="margin-top:6px"></span>
+      <div style="flex:1;min-width:0"><div class="row"><b class="ellipsis">${esc(i.title)}</b><span class="chip">${esc(KIND[i.kind] || i.kind)}</span></div>
+      ${i.detail ? `<details class="more"><summary class="tiny">detail</summary><pre class="mono viewer">${esc(i.detail)}</pre></details>` : ""}</div>
+      <div class="small muted" style="text-align:right;white-space:nowrap">${dt(i.started)}<div class="tiny">${dur}</div></div></div>`;
+  }).join("");
+  const acts = (x.actions || []).slice(0, 15).map((a) => `<div class="item"><span class="dot ${a.ok ? "ok" : "bad"}"></span><div class="ellipsis" style="flex:1"><b>${esc(a.kind)}</b> ${esc(a.target)} <span class="muted">di ${esc(a.node)}</span>
+      <div class="tiny muted ellipsis">${esc(a.who || "")}</div></div><span class="small muted">${ago(a.t)}</span></div>`).join("");
+  const down = x.incidents.filter((i) => i.kind === "site").reduce((a, i) => a + ((i.ended || Date.now() / 1000) - i.started), 0);
+  return head("Insiden", `${x.open.length} terbuka · ${x.incidents.length} dalam 30 hari${down ? ` · website down total ${durText(down)}` : ""}`, sel) +
+    `<div class="grid g2"><div class="card"><h2>Riwayat · 30 hari</h2><div class="list">${rows || '<div class="empty"><b>Belum ada insiden</b>Insiden dicatat saat masalah bertahan (mis. website down 2 cek berturut-turut).</div>'}</div></div>
+     <div class="stack"><div class="card"><h2>Riwayat aksi</h2><div class="list">${acts || '<div class="muted small">Belum ada aksi.</div>'}</div></div></div></div>`;
+}
+function durText(s) {
+  s = Math.max(0, Math.round(s));
+  if (s < 90) return `${s} detik`;
+  if (s < 3600) return `${Math.round(s / 60)} menit`;
+  if (s < 86400) return `${Math.floor(s / 3600)} jam ${Math.floor((s % 3600) / 60)} menit`;
+  return `${Math.floor(s / 86400)} hari ${Math.floor((s % 86400) / 3600)} jam`;
+}
+
+// ── Notifications ──
+async function loadNotify(force) {
+  if (!force && S.ntf && Date.now() - S.ntf.at < 20000) return;
+  try { S.ntf = { ...(await api("GET", "/api/notify")), at: Date.now() }; } catch (e) { S.ntf = { error: e.message, at: Date.now() }; }
+  if (S.route === "notify") $("#main").innerHTML = notifyPage();
+}
+function notifyPage() {
+  const x = S.ntf;
+  if (!x) return head("Notifikasi", "Memuat…");
+  if (x.error) return head("Notifikasi", esc(x.error));
+  const days = ["Senin", "Selasa", "Rabu", "Kamis", "Jumat", "Sabtu", "Minggu"];
+  const log = (x.log || []).map((l) => `<div class="item" style="align-items:flex-start"><span class="dot ${l.ok ? "ok" : "bad"}" style="margin-top:6px"></span>
+    <div style="flex:1;min-width:0"><pre class="mono tiny" style="margin:0;white-space:pre-wrap">${esc(l.text)}</pre>${l.error ? `<div class="tiny red">${esc(l.error)}</div>` : ""}</div><span class="small muted">${ago(l.t)}</span></div>`).join("");
+  return head("Notifikasi", x.enabled ? `Aktif · dikirim lewat Hermes ke ${esc(x.label)}` : "Nonaktif — atur target di config server",
+      `<button class="btn" data-act="ntfTest">Kirim tes</button><button class="btn" data-act="ntfPreview">Lihat laporan mingguan</button><button class="btn primary" data-act="ntfReport">Kirim laporan sekarang</button>`) +
+    `<div class="grid g2"><div class="card"><h2>Yang dikirim</h2><div class="small" style="line-height:1.7">
+       🌐 website down (2 cek berturut-turut) &amp; pulih · 🖥 server tidak terjangkau (3 menit) · 🌡 suhu ≥ 80°C (3 menit) · ⚡ undervoltage ·
+       💾 disk ≥ 93% · ⏰ job gagal / terlewat · 🔒 SSL &lt; 7 hari · 🗄 backup basi/kosong/menyusut · 💽 error kartu SD · 🔁 restart mendadak (dengan dugaan penyebab) ·
+       📡 internet rumah putus (status website ditahan)<br>
+       📊 Laporan mingguan: tiap ${esc(days[(x.weekly || {}).weekday ?? 0])} ${String((x.weekly || {}).hour ?? 8).padStart(2, "0")}:00.</div>
+       ${S.filters.report ? `<pre class="mono viewer">${esc(S.filters.report)}</pre>` : ""}</div>
+     <div class="card"><h2>Terkirim terakhir</h2><div class="list">${log || '<div class="muted small">Belum ada.</div>'}</div></div></div>`;
+}
+
+// ── Actions & logs ──
+const ACTION_TEXT = { "restart-service": "Restart service", "restart-container": "Restart container", "run-job": "Jalankan job sekarang" };
+function confirmAction(node, kind, target) {
+  const n = S.state.nodes.find((x) => x.id === node);
+  openDialog(`<h3>${esc(ACTION_TEXT[kind] || kind)}?</h3>
+    <p><b class="mono">${esc(target)}</b> di <b>${esc(n ? n.name : node)}</b></p>
+    <p class="small muted">${kind === "run-job" ? "Perintah job dijalankan sekali, sekarang, sebagai user-nya. Bisa makan waktu beberapa menit." : "Layanan akan berhenti sebentar lalu menyala lagi."} Aksi ini dicatat di Riwayat aksi.</p>
+    <div id="actOut"></div>
+    <div class="foot"><button class="btn" value="cancel" formnovalidate>Batal</button><button class="btn primary" value="run">Ya, jalankan</button></div>`,
+  async () => {
+    const out = $("#actOut");
+    out.innerHTML = '<p class="small muted">Menjalankan…</p>';
+    $$("#dlg button").forEach((b) => (b.disabled = true));
+    try {
+      const r = await api("POST", "/api/action", { node, kind, target });
+      out.innerHTML = `<p class="${r.ok ? "green" : "red"}"><b>${r.ok ? "Berhasil" : "Gagal"}</b> · ${esc(r.description)}</p>${r.output ? `<pre class="mono viewer">${esc(r.output)}</pre>` : ""}`;
+    } catch (e) { out.innerHTML = `<p class="red">${esc(e.message)}</p>`; }
+    $$("#dlg button").forEach((b) => (b.disabled = false));
+    const run = $('#dlg button[value="run"]'); if (run) run.remove();
+    const cancel = $('#dlg button[value="cancel"]'); if (cancel) cancel.textContent = "Tutup";
+    setTimeout(tick, 3000);
+    return false;
+  });
+}
+async function showLogs(node, kind, target) {
+  openDialog(`<h3>Log · <span class="mono">${esc(target)}</span></h3><div id="logOut"><p class="small muted">Memuat…</p></div>
+    <div class="foot"><button class="btn" value="cancel" formnovalidate>Tutup</button></div>`, async () => {});
+  $("#dlg").style.width = "min(980px, calc(100vw - 32px))";
+  try {
+    const r = await api("GET", `/api/logs?node=${encodeURIComponent(node)}&kind=${encodeURIComponent(kind)}&target=${encodeURIComponent(target)}`);
+    $("#logOut").innerHTML = `<pre class="mono viewer" style="max-height:65vh">${esc(r.output || "(kosong)")}</pre>`;
+    const pre = $("#logOut pre"); if (pre) pre.scrollTop = pre.scrollHeight;
+  } catch (e) { $("#logOut").innerHTML = `<p class="red">${esc(e.message)}</p>`; }
 }
 
 // ── Websites ──
@@ -295,14 +441,14 @@ function jobs() {
           <div class="g-meta small"><span>${esc(j.scheduleText)}</span><span class="muted">${esc(j.kindTitle)}</span></div>
           <div class="g-meta small"><span><span class="muted">terakhir</span> ${ago(j.last)}</span><span class="${j.next && j.next < now - 900 ? "amber" : ""}"><span class="muted">berikutnya</span> ${next}</span></div>
           <div class="g-status small"><b class="${col[j.health] || "muted"}">● ${esc(j.healthTitle)}</b></div></div>
-          ${open ? `<div class="g-detail">${jobDetail(j)}</div>` : ""}`;
+          ${open ? `<div class="g-detail">${jobDetail({ ...j, _node: n.id })}</div>` : ""}`;
       }).join("")}</div></div>`;
   }).join("");
   return head("Cron & job", `<span class="${failed ? "red" : ""}">${failed} gagal</span> · <span class="${missed ? "amber" : ""}">${missed} terlewat</span> · ${all.filter((x) => !x.j.system).length} job aplikasi · ${all.filter((x) => x.j.system).length} job sistem`,
     `<input type="search" id="jobq" placeholder="Cari job…" value="${esc(f.jobq || "")}">
      <button class="btn ${f.problems ? "primary" : ""}" data-act="toggle" data-v="problems">Hanya bermasalah</button>
      <button class="btn ${f.sys ? "primary" : ""}" data-act="toggle" data-v="sys">Job sistem</button>`) +
-    `<div class="stack">${cards || `<div class="card empty"><b>Belum ada data job</b>crontab, /etc/cron.d, systemd timer dan cron Hermes dibaca saat sampling.</div>`}
+    `<div class="stack">${backupCard()}${cards || `<div class="card empty"><b>Belum ada data job</b>crontab, /etc/cron.d, systemd timer dan cron Hermes dibaca saat sampling.</div>`}
     <p class="tiny muted">Status cron dibaca dari journal, lalu dari file log bila baris cron menulis ke log. "Terlewat" = jadwal menunjukkan job harusnya sudah jalan setelah run terakhir.</p></div>`;
 }
 function jobDetail(j) {
@@ -312,7 +458,9 @@ function jobDetail(j) {
     ${kv("Jenis", [j.kindTitle, j.source, j.user && "user " + j.user].filter(Boolean).join(" · "))}
     ${kv("Ekspresi", j.expr + (j.expectedLast ? ` · seharusnya terakhir ${dt(j.expectedLast)}` : ""))}
     ${kv("Perintah", j.command, true)}${kv("Folder", j.workdir, true)}${kv("Log", j.log ? j.log + (j.logModified ? ` · diubah ${ago(j.logModified)}` : "") : "", true)}
-    ${j.failureStreak ? kv("Gagal beruntun", `${j.failureStreak}×`) : ""}${hist ? `<div class="small muted">Eksekusi terakhir</div>${hist}` : ""}</div>`;
+    ${j.failureStreak ? kv("Gagal beruntun", `${j.failureStreak}×`) : ""}${hist ? `<div class="small muted">Eksekusi terakhir</div>${hist}` : ""}
+    <div class="row wrap" style="margin-top:4px">${!j.system && S.state.actions && S.state.actions.jobs && ["cron", "hermes"].includes(j.kind) ? `<button class="btn sm" data-act="doAction" data-node="${esc(j._node)}" data-kind="run-job" data-v="${esc(j.id)}">Jalankan sekarang</button>` : ""}
+      ${j.log ? `<button class="btn sm" data-act="logs" data-node="${esc(j._node)}" data-kind="job" data-v="${esc(j.id)}">Lihat log</button>` : ""}</div></div>`;
 }
 
 // ── Traffic ──
@@ -590,6 +738,7 @@ function activity() {
 // ── Dialogs ──
 function openDialog(html, onSubmit) {
   const d = $("#dlg");
+  d.style.width = "";
   d.innerHTML = `<form method="dialog">${html}</form>`;
   const form = $("form", d);
   form.addEventListener("submit", async (e) => {
@@ -690,6 +839,11 @@ document.addEventListener("click", (e) => {
   else if (act === "newTask") taskDialog(null, v);
   else if (act === "task") taskDialog(S.ws.tasks.find((t) => t.id === v));
   else if (act === "agentsReload") loadAgents(true);
+  else if (act === "doAction") { e.stopPropagation(); confirmAction(a.dataset.node, a.dataset.kind, v); }
+  else if (act === "logs") { e.stopPropagation(); showLogs(a.dataset.node, a.dataset.kind, v); }
+  else if (act === "ntfTest") api("POST", "/api/notify", { test: true }).then((r) => { toast(r.ok ? "Tes terkirim — cek WhatsApp" : "Gagal: " + r.error, !r.ok); loadNotify(true); }).catch((x) => toast(x.message, true));
+  else if (act === "ntfReport") { if (confirm("Kirim laporan mingguan sekarang ke WhatsApp?")) api("POST", "/api/notify", { report: true }).then((r) => { toast(r.ok ? "Laporan terkirim" : "Gagal: " + r.error, !r.ok); loadNotify(true); }); }
+  else if (act === "ntfPreview") api("GET", "/api/report").then((r) => { S.filters.report = r.text; $("#main").innerHTML = notifyPage(); });
   else if (act === "omniReload") { api("POST", "/api/omniroute").catch(() => {}); setTimeout(() => loadOmni(true), 4000); toast("Memuat OmniRoute…"); }
   else if (act === "fgo") { S.files.path = v; S.files.view = null; S.files.file = null; render(); }
   else if (act === "fview") { S.files.view = v; S.files.file = null; render(); }
@@ -701,6 +855,7 @@ document.addEventListener("change", (e) => {
   if (e.target.id === "pfSel") { S.filters.pf = e.target.value; render(); }
   if (e.target.id === "lcSel") { S.filters.lc = e.target.value; render(); }
   if (e.target.id === "assigneeSel") { S.filters.assignee = e.target.value; render(); }
+  if (e.target.id === "ikind") { S.filters.ikind = e.target.value; $("#main").innerHTML = incidents(); }
   if (e.target.id === "profileSel") { S.filters.profile = e.target.value; loadAgents(true); }
   if (e.target.id === "fileNode") { S.files = { node: e.target.value, path: "~" }; render(); }
 });
@@ -740,6 +895,7 @@ async function tick() {
   if ($("#dlg").open || S.dragging) return;                 // don't redraw under an open form or a drag
   const busy = document.activeElement && ["INPUT", "TEXTAREA", "SELECT"].includes(document.activeElement.tagName);
   await loadState();
+  if (S.state && S.ws && S.state.wsRev != null && S.state.wsRev !== S.ws.rev) await loadWs();   // changed elsewhere (Mac app)
   if (!busy) render(); else renderNav();
 }
 (async () => {
@@ -750,3 +906,56 @@ async function tick() {
   setInterval(() => { if (!document.hidden && !$("#dlg").open) loadWs(); }, 60000);
   document.addEventListener("visibilitychange", () => { if (!document.hidden) tick(); });
 })();
+
+// ── ⌘K palette ──
+function paletteItems() {
+  const out = [];
+  NAV.forEach(([, items]) => items.forEach(([id, ico, title]) => out.push({ t: title, s: "Halaman", h: `#/${id}`, ico })));
+  const st = S.state || { nodes: [], sites: [] };
+  st.nodes.forEach((n) => {
+    out.push({ t: n.name, s: "Server", h: "#/servers", ico: "▤" });
+    ((n.detail && n.detail.jobs) || []).filter((j) => !j.system).forEach((j) => out.push({ t: j.name, s: `Job · ${n.name}`, h: "#/jobs", ico: "◷", job: `${n.id}|${j.id}` }));
+    ((n.detail && n.detail.containers) || []).forEach((c) => out.push({ t: c.name, s: `Container · ${n.name}`, h: "#/servers", ico: "▣" }));
+  });
+  st.sites.forEach((x) => out.push({ t: x.name, s: "Website", h: "#/websites", ico: "◎" }));
+  if (S.ws) {
+    S.ws.projects.forEach((p) => out.push({ t: p.name, s: `Project · ${p.key}`, h: `#/project/${p.id}`, ico: "▦" }));
+    const keys = Object.fromEntries(S.ws.projects.map((p) => [p.id, p]));
+    S.ws.tasks.filter((t) => !t.archived && keys[t.project_id]).forEach((t) => out.push({ t: t.title, s: `${keys[t.project_id].key}-${t.number} · ${keys[t.project_id].name}`, h: `#/project/${t.project_id}`, ico: "☑", task: t.id }));
+  }
+  return out;
+}
+let palIndex = 0, palResults = [];
+function openPalette() {
+  const p = $("#palette");
+  $("#palQ").value = ""; palIndex = 0; drawPalette();
+  p.showModal(); $("#palQ").focus();
+}
+function drawPalette() {
+  const q = $("#palQ").value.trim().toLowerCase();
+  const all = paletteItems();
+  palResults = (q ? all.filter((x) => (x.t + " " + x.s).toLowerCase().includes(q)) : all.filter((x) => x.s === "Halaman")).slice(0, 40);
+  palIndex = Math.min(palIndex, Math.max(0, palResults.length - 1));
+  $("#palList").innerHTML = palResults.map((x, i) => `<div class="pal-item ${i === palIndex ? "on" : ""}" data-i="${i}"><span class="ico">${x.ico}</span><span class="ellipsis" style="flex:1">${esc(x.t)}</span><span class="tiny muted ellipsis">${esc(x.s)}</span></div>`).join("") || '<div class="muted small" style="padding:12px">Tidak ada hasil</div>';
+}
+function choosePalette(i) {
+  const x = palResults[i];
+  if (!x) return;
+  $("#palette").close();
+  if (x.job) S.filters["job:" + x.job] = true;
+  location.hash = x.h;
+  if (x.task) setTimeout(() => { const t = S.ws.tasks.find((y) => y.id === x.task); if (t) taskDialog(t); }, 150);
+}
+$("#openPalette").addEventListener("click", openPalette);
+$("#palQ").addEventListener("input", () => { palIndex = 0; drawPalette(); });
+$("#palQ").addEventListener("keydown", (e) => {
+  if (e.key === "ArrowDown") { palIndex = Math.min(palIndex + 1, palResults.length - 1); drawPalette(); e.preventDefault(); }
+  else if (e.key === "ArrowUp") { palIndex = Math.max(palIndex - 1, 0); drawPalette(); e.preventDefault(); }
+  else if (e.key === "Enter") { choosePalette(palIndex); e.preventDefault(); }
+});
+$("#palList").addEventListener("click", (e) => { const it = e.target.closest(".pal-item"); if (it) choosePalette(Number(it.dataset.i)); });
+$("#palette").addEventListener("click", (e) => { if (e.target.id === "palette") $("#palette").close(); });
+document.addEventListener("keydown", (e) => {
+  if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "k") { e.preventDefault(); if ($("#palette").open) $("#palette").close(); else openPalette(); }
+});
+if ("serviceWorker" in navigator) navigator.serviceWorker.register("/sw.js").catch(() => {});

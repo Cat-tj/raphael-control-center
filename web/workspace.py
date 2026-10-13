@@ -92,16 +92,75 @@ class Workspace:
             os.remove(old)
         return out
 
+    on_change = None            # called after every committed change (bumps the sync revision)
+
     def _tx(self, fn):
         with self.lock:
             self.db.execute("BEGIN IMMEDIATE")
             try:
                 r = fn(self.db)
                 self.db.execute("COMMIT")
-                return r
             except Exception:
                 self.db.execute("ROLLBACK")
                 raise
+        if self.on_change:
+            self.on_change()
+        return r
+
+    # ── Replication (the Mac app keeps a local copy) ──
+    def tables(self) -> list:
+        with self.lock:
+            return [r[0] for r in self.db.execute("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name")]
+
+    def dump(self) -> dict:
+        out = {}
+        with self.lock:
+            for t in self.tables():
+                cur = self.db.execute(f'SELECT * FROM "{t}"')
+                cols = [c[0] for c in cur.description]
+                out[t] = [dict(zip(cols, r)) for r in cur.fetchall()]
+        return out
+
+    def apply(self, statements: list) -> int:
+        """Runs a client's committed write statements in one transaction. Only INSERT/UPDATE/DELETE
+        (and the reads they need) on workspace tables are allowed — enforced by SQLite itself."""
+        if not isinstance(statements, list) or len(statements) > 5000:
+            raise WorkspaceError("batch tidak valid")
+        allowed_tables = set(self.tables())
+        import sqlite3 as _s
+
+        def auth(action, a1, a2, dbname, trigger):
+            if action in (_s.SQLITE_INSERT, _s.SQLITE_DELETE):
+                return _s.SQLITE_OK if a1 in allowed_tables else _s.SQLITE_DENY
+            if action in (_s.SQLITE_UPDATE, _s.SQLITE_READ):
+                return _s.SQLITE_OK if a1 in allowed_tables else _s.SQLITE_DENY
+            if action in (_s.SQLITE_SELECT, _s.SQLITE_FUNCTION):
+                return _s.SQLITE_OK
+            return _s.SQLITE_DENY                      # PRAGMA, ATTACH, CREATE, DROP, ALTER, BEGIN/COMMIT…
+        n = 0
+        with self.lock:
+            self.db.execute("BEGIN IMMEDIATE")
+            try:
+                self.db.execute("PRAGMA defer_foreign_keys = ON")
+                self.db.set_authorizer(auth)
+                for st in statements:
+                    if not (isinstance(st, dict) and isinstance(st.get("sql"), str) and isinstance(st.get("args", []), list)):
+                        raise WorkspaceError("statement tidak valid")
+                    self.db.execute(st["sql"], [a if isinstance(a, (int, float, str)) or a is None else str(a) for a in st.get("args", [])])
+                    n += 1
+                self.db.set_authorizer(None)
+                self.db.execute("COMMIT")
+            except sqlite3.DatabaseError as e:
+                self.db.set_authorizer(None)
+                self.db.execute("ROLLBACK")
+                raise WorkspaceError(f"ditolak: {e}")
+            except Exception:
+                self.db.set_authorizer(None)
+                self.db.execute("ROLLBACK")
+                raise
+        if self.on_change and n:
+            self.on_change()
+        return n
 
     def _event(self, db, project_id, type_, title, meta=None):
         db.execute("INSERT OR IGNORE INTO activity (id, project_id, type, ts, source, title, url, meta) VALUES (?,?,?,?,?,?,?,?)",

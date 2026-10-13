@@ -62,6 +62,15 @@ transaction and rolls back on failure.
 Every external event id is `<source>:<kind>:<external id>|<project>`, so repeated syncs
 insert nothing new.
 
+## Sync with Raphael Web
+
+Optional (Monitor → Sumber data → Raphael Web → *Sinkronkan workspace*). Raphael Web keeps the
+shared copy; this Mac keeps a local one and works offline. `WorkspaceDB.onCommit` receives the
+write statements of every committed transaction; `WorkspaceSync` queues them in
+`workspace-outbox.json` and applies them in order on the server, then pulls the full workspace
+whenever the server's revision moved (edits from the browser or another device). A batch the
+server rejects is dropped and the server copy pulled. See `web/README.md`.
+
 ## Tests
 
 `scripts/test.sh` builds `Sources/Workspace` (+ the cron parser) with `Tests/main.swift` and

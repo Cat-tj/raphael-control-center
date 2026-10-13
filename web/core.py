@@ -251,7 +251,7 @@ def parse(j: dict, now: float | None = None, previous: dict | None = None, slow:
         "disk": root["used"] if root else 0, "throttled": j.get("throttled"), "disks": disks,
         "topCPU": procs("topCPU"), "topMem": procs("topMem"), "containers": containers, "failed": j.get("failed") or [],
         "ips": j.get("ips") or [], "tz": tz, "jobs": [job(x, tz, now) for x in j.get("jobs") or []],
-        "services": [{"unit": v.get("unit") or "", "name": (v.get("unit") or "").replace(".service", ""), "state": v.get("state") or "",
+        "services": [{"unit": v.get("unit") or "", "name": (v.get("unit") or "").replace(".service", ""), "user": bool(v.get("user")), "state": v.get("state") or "",
                       "sub": v.get("sub") or "", "mem": float(v.get("mem") or 0), "restarts": int(v.get("restarts") or 0),
                       "desc": v.get("desc") or "", "running": v.get("state") == "active"} for v in j.get("services") or []],
         "routes": [{"hosts": r.get("hosts") or [], "proxy": r.get("proxy"), "root": r.get("root")} for r in j.get("caddy") or []],

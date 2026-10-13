@@ -603,7 +603,10 @@ final class MonitorStore: ObservableObject {
                     if st.isdigit(): j["logModified"] = float(st)
                 if tail:
                     lines = [x.strip() for x in tail if x.strip()]
-                    bad = [x for x in lines[-4:] if re.search(r'error|fail|fatal|refused|denied|traceback|exception', x, re.I)]
+                    # Only what came after the last success marker counts (a run that logs "ok" clears older errors).
+                    okidx = max([i for i, x in enumerate(lines) if re.search(r'\b(ok|success(ful)?|succeeded|done|completed|finished)\b', x, re.I)
+                                 and not re.search(r'error|fail|fatal', x, re.I)], default=-1)
+                    bad = [x for x in lines[okidx + 1:][-4:] if re.search(r'error|fail|fatal|refused|denied|traceback|exception', x, re.I)]
                     j["detail"] = (bad[0] if bad else (lines[-1] if lines else ''))[:240]
                     j["status"] = "failed" if bad else "ok"
             jobs.append(j)

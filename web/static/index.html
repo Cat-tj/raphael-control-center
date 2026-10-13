@@ -6,6 +6,12 @@
 <meta name="color-scheme" content="light dark">
 <title>Raphael Web</title>
 <link rel="icon" href="icon.svg" type="image/svg+xml">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="apple-touch-icon" href="icon-180.png">
+<meta name="theme-color" content="#10224F">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Raphael">
 <link rel="stylesheet" href="app.css">
 </head>
 <body>
@@ -15,6 +21,7 @@
       <img src="icon.svg" alt="" width="34" height="34">
       <div><b>RAPHAEL</b><span>Web · Control Center</span></div>
     </div>
+    <button class="search" id="openPalette">⌕ Cari… <kbd>⌘K</kbd></button>
     <nav id="nav"></nav>
     <div class="side-foot">
       <div class="theme" role="group" aria-label="Tema">
@@ -30,6 +37,7 @@
 <button class="menu-btn" id="menuBtn" aria-label="Menu">☰</button>
 <div class="toast" id="toast" role="status" aria-live="polite"></div>
 <dialog id="dlg"></dialog>
+<dialog id="palette" class="palette"><input type="search" id="palQ" placeholder="Cari halaman, server, website, job, project, task…" autocomplete="off"><div id="palList"></div></dialog>
 <script src="app.js"></script>
 </body>
 </html>

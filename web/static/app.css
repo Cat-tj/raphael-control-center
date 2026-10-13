@@ -216,3 +216,14 @@ dialog .foot { display: flex; gap: 8px; justify-content: flex-end; margin-top: 6
 .list .item.click { cursor: pointer; border-radius: 8px; }
 .list .item.click:hover { background: var(--wash); }
 pre.viewer { margin: 10px 0 0; padding: 12px; background: var(--wash); border-radius: 10px; font-size: 12px; line-height: 1.5; max-height: 70vh; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; }
+.tbl td.nw { white-space: nowrap; text-align: right; }
+
+/* Search / palette */
+.search { display: flex; align-items: center; gap: 8px; width: 100%; border: 1px solid var(--line); background: var(--wash); color: var(--muted); border-radius: 12px; padding: 8px 12px; cursor: pointer; text-align: left; }
+.search kbd { margin-left: auto; font: 11px var(--mono); color: var(--muted); }
+dialog.palette { width: min(640px, calc(100vw - 32px)); padding: 0; margin-top: 12vh; }
+dialog.palette input { width: 100%; border: 0; border-bottom: 1px solid var(--line); border-radius: 0; padding: 16px 18px; font-size: 16px; background: transparent; outline: none; }
+#palList { max-height: 55vh; overflow-y: auto; padding: 6px; }
+.pal-item { display: flex; align-items: center; gap: 10px; padding: 9px 12px; border-radius: 10px; cursor: pointer; min-width: 0; }
+.pal-item.on, .pal-item:hover { background: var(--violet-soft); }
+.pal-item .ico { width: 18px; text-align: center; color: var(--violet); }

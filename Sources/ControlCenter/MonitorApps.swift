@@ -383,6 +383,7 @@ struct SourcesSheet: View {
     @State private var nURL = ""
     @State private var nKey = ""
     @State private var webURL = MonitorStore.webURL
+    @State private var syncOn = WorkspaceSync.enabled
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -399,6 +400,15 @@ struct SourcesSheet: View {
                                 Button("Buka") { NSWorkspace.shared.open(u) }.buttonStyle(RPillButton())
                             }
                         }
+                        Toggle(isOn: Binding(get: { WorkspaceSync.enabled }, set: { WorkspaceSync.enabled = $0; syncOn = $0 })) {
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text("Sinkronkan workspace (portfolio, project, task) dengan Raphael Web").font(.system(size: 12, weight: .semibold))
+                                Text("Data disimpan di server; Mac menyimpan salinan untuk offline. Perubahan saat offline dikirim begitu tersambung lagi.")
+                                    .font(.system(size: 11)).foregroundStyle(RTheme.muted)
+                            }
+                        }
+                        .toggleStyle(.switch).disabled(MonitorStore.webURL.isEmpty)
+                        if syncOn { WorkspaceSyncBadge() }
                     }
                     source("Cloudflare Analytics", "cloud.fill", state: cfState,
                            help: "Traffic per domain (7 hari). Token: dash.cloudflare.com → API Tokens → template \"Read analytics and logs\".") {

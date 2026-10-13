@@ -7,5 +7,11 @@
   "sites": [
     { "name": "Website", "url": "https://example.com" }
   ],
-  "envFiles": ["~/.hermes/.env"]
+  "envFiles": ["~/.hermes/.env"],
+  "publicUrl": "https://host.tailnet.ts.net:8787",
+  "links": [{ "name": "Hermes dashboard", "url": "https://host.tailnet.ts.net/" }],
+  "notify": { "enabled": true, "target": "whatsapp:<chat id from `hermes send --list whatsapp`>", "label": "WhatsApp · me",
+              "weekly": { "weekday": 0, "hour": 8 }, "maxPerHour": 6 },
+  "backups": [{ "name": "App DB", "node": "this-box", "glob": "/var/backups/app/*.dump", "maxAgeHours": 26, "minBytes": 10000, "shrinkRatio": 0.5 }],
+  "actions": { "services": ["nginx", "caddy"], "containers": true, "jobs": true }
 }

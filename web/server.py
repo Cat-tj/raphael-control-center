@@ -31,6 +31,8 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse
 
 HERE = os.path.dirname(os.path.abspath(__file__))
+mimetypes.add_type("application/manifest+json", ".webmanifest")
+mimetypes.add_type("text/javascript", ".js")
 sys.path.insert(0, HERE)
 import core  # noqa: E402
 import files  # noqa: E402
@@ -89,14 +91,16 @@ class Metrics:
         self.db.execute("""CREATE TABLE IF NOT EXISTS sample (node TEXT, t REAL, cpu REAL, mem REAL, swap REAL, disk REAL,
                            load REAL, temp REAL, rx REAL, tx REAL, req REAL)""")
         self.db.execute("CREATE INDEX IF NOT EXISTS sample_node_t ON sample(node, t)")
+        if "thr" not in {r[1] for r in self.db.execute("PRAGMA table_info(sample)")}:
+            self.db.execute("ALTER TABLE sample ADD COLUMN thr INTEGER")      # throttle bits happening now
         self.db.execute("CREATE TABLE IF NOT EXISTS site_check (url TEXT, t REAL, code INTEGER, ms INTEGER, ok INTEGER)")
         self.db.execute("CREATE INDEX IF NOT EXISTS site_url_t ON site_check(url, t)")
         self.db.execute("CREATE TABLE IF NOT EXISTS kv (key TEXT PRIMARY KEY, value TEXT)")
 
     def add_sample(self, node: str, s: dict):
         with self.lock:
-            self.db.execute("INSERT INTO sample VALUES (?,?,?,?,?,?,?,?,?,?,?)",
-                            (node, s["t"], s["cpu"], s["mem"], s["swap"], s["disk"], s["load"], s.get("temp"), s["rx"], s["tx"], s.get("req")))
+            self.db.execute("INSERT INTO sample (node, t, cpu, mem, swap, disk, load, temp, rx, tx, req, thr) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+                            (node, s["t"], s["cpu"], s["mem"], s["swap"], s["disk"], s["load"], s.get("temp"), s["rx"], s["tx"], s.get("req"), s.get("thr")))
             self.db.execute("DELETE FROM sample WHERE t < ?", (time.time() - KEEP,))
 
     def samples(self, node: str, hours: float) -> list:
@@ -203,7 +207,7 @@ class Monitor:
             rx, tx = float(j.get("rx") or 0), float(j.get("tx") or 0)
             req = d["tunnel"]["total"] if d.get("tunnel") else None
             s = {"t": now, "cpu": d["cpu"], "mem": d["mem"], "swap": d["swap"], "disk": d["disk"], "load": d["load"],
-                 "temp": d["temp"], "rx": 0.0, "tx": 0.0, "req": None}
+                 "temp": d["temp"], "rx": 0.0, "tx": 0.0, "req": None, "thr": throttle_now(d.get("throttled"))}
             p = self.raw.get(nid)
             if p and now > p[0]:
                 dt = now - p[0]
@@ -376,6 +380,11 @@ class Monitor:
         threading.Thread(target=lambda: (time.sleep(8), loop(self.refresh_omniroute, 120, "omniroute")), daemon=True).start()
 
     # Views
+    def state_light(self) -> dict:
+        """Sites + certificate expiry by URL, for incident evaluation (no history queries)."""
+        sites = self.site_list()
+        return {"sites": sites, "certs": {s["url"]: self.certs[host_key(s["url"])] for s in sites if host_key(s["url"]) in self.certs}}
+
     def state(self) -> dict:
         nodes = []
         for n in self.nodes:
@@ -396,8 +405,32 @@ class Monitor:
         om = self.omniroute
         if om.get("state") == "ok" and om.get("down"):
             alerts.append({"node": "OmniRoute", "level": 1, "text": f"{om['down']} provider down", "kind": "omniroute"})
+        ops_ = getattr(self, "ops", None)
+        if ops_:
+            for n in nodes:
+                n["health"] = ops_.health.get(n["id"])
+            for b in ops_.backups:
+                if b.get("problem"):
+                    alerts.append({"node": b["nodeName"], "level": 2, "text": f"Backup {b['name']}: {b['problem']}", "kind": "backup"})
+            if not ops_.internet_ok:
+                alerts.insert(0, {"node": "Rumah", "level": 2, "text": "Internet rumah putus — status website ditahan", "kind": "internet"})
+            alerts.sort(key=lambda a: -a["level"])
+        notify = self.cfg.get("notify") or {}
         return {"version": VERSION, "now": time.time(), "nodes": nodes, "sites": sites, "alerts": alerts, "cloudflare": cf,
+                "wsRev": getattr(self, "ws_rev_fn", lambda: None)(),
+                "backups": ops_.backups if ops_ else [], "internetOk": ops_.internet_ok if ops_ else True,
+                "openIncidents": list(ops_.tracker.open.values()) if ops_ else [],
+                "notify": {"enabled": bool(notify.get("enabled") and notify.get("target")), "label": notify.get("label") or ""},
+                "actions": {"containers": bool((self.cfg.get("actions") or {}).get("containers")), "jobs": bool((self.cfg.get("actions") or {}).get("jobs")),
+                            "services": (self.cfg.get("actions") or {}).get("services", [])},
                 "links": self.cfg.get("links", []), "omniroute": {k: om.get(k) for k in ("state", "healthy", "degraded", "down", "dashboard")}}
+
+
+def throttle_now(hexs) -> int:
+    try:
+        return int(hexs[2:], 16) & 0xF if hexs else 0
+    except (ValueError, TypeError):
+        return 0
 
 
 def host_key(url: str) -> str:
@@ -537,6 +570,16 @@ class App:
             self.monitor = Monitor(cfg, self.metrics, f.read())
         self.static = os.path.join(HERE, "static")
         self.last_refresh = 0.0
+        self.ws_rev = int(self.metrics.get("wsRev", 0) or 0)
+
+        def bump():
+            self.ws_rev += 1
+            self.metrics.put("wsRev", self.ws_rev)
+        self.ws.on_change = bump
+        from operations import Operations
+        self.ops = Operations(self.monitor, self.metrics, self.ws, cfg)
+        self.monitor.ops = self.ops
+        self.monitor.ws_rev_fn = lambda: self.ws_rev
 
 
 def make_handler(app: App):
@@ -568,7 +611,7 @@ def make_handler(app: App):
 
         def _body(self) -> dict:
             n = int(self.headers.get("Content-Length") or 0)
-            if n > 256 * 1024:
+            if n > 8 * 1024 * 1024:
                 raise WorkspaceError("request terlalu besar")
             raw = self.rfile.read(n) if n else b"{}"
             try:
@@ -605,7 +648,11 @@ def make_handler(app: App):
                 if u.path == "/api/site":
                     return self._json(200, {"url": q.get("url"), "checks": app.metrics.checks(q.get("url", ""), 24)})
                 if u.path == "/api/workspace":
-                    return self._json(200, app.ws.snapshot())
+                    return self._json(200, {**app.ws.snapshot(), "rev": app.ws_rev})
+                if u.path == "/api/ws/rev":
+                    return self._json(200, {"rev": app.ws_rev})
+                if u.path == "/api/ws/dump":
+                    return self._json(200, {"rev": app.ws_rev, "tables": app.ws.dump()})
                 if u.path == "/api/raw":
                     # Latest raw collector output, so the Mac app can reuse this sample instead of SSH-ing in itself.
                     r = app.monitor.raw_line.get(q.get("node", ""))
@@ -623,6 +670,23 @@ def make_handler(app: App):
                     if not node:
                         return self._json(404, {"error": "device tidak dikenal"})
                     return self._json(200, files.run(node, "list" if u.path == "/api/files" else "read", q.get("path") or "~"))
+                if u.path == "/api/incidents":
+                    return self._json(200, {"incidents": app.ops.incidents(float(q.get("days", "30"))), "open": list(app.ops.tracker.open.values())})
+                if u.path == "/api/history30":
+                    return self._json(200, {"node": q.get("node"), "hours": app.ops.history30(q.get("node", ""), int(q.get("days", "30")))})
+                if u.path == "/api/notify":
+                    n = app.cfg.get("notify") or {}
+                    return self._json(200, {"enabled": bool(n.get("enabled") and n.get("target")), "label": n.get("label") or "",
+                                            "weekly": n.get("weekly"), "log": app.ops.notify_log()})
+                if u.path == "/api/report":
+                    return self._json(200, {"text": app.ops.report_text()})
+                if u.path == "/api/actionlog":
+                    return self._json(200, {"log": app.ops.action_log()})
+                if u.path == "/api/logs":
+                    try:
+                        return self._json(200, app.ops.logs(q.get("node", ""), q.get("kind", ""), q.get("target", "")))
+                    except ValueError as e:
+                        return self._json(400, {"error": str(e)})
                 if u.path == "/api/me":
                     return self._json(200, {"login": self.headers.get("Tailscale-User-Login"), "name": self.headers.get("Tailscale-User-Name")})
                 if u.path == "/healthz":
@@ -664,6 +728,24 @@ def make_handler(app: App):
                         threading.Thread(target=app.monitor.sample_all, daemon=True).start()
                         threading.Thread(target=app.monitor.check_sites, daemon=True).start()
                     return self._json(202, {"ok": True})
+                if parts[:2] == ["api", "notify"] and method == "POST":
+                    text = "✅ Tes notifikasi dari Raphael Web. Kalau pesan ini sampai, alert server akan dikirim ke sini." if body.get("test") else None
+                    if body.get("report"):
+                        text = app.ops.report_text()
+                    if not text:
+                        raise WorkspaceError("tidak ada yang dikirim")
+                    return self._json(200, app.ops.notify(text, force=True))
+                if parts[:3] == ["api", "ws", "apply"] and method == "POST":
+                    base = app.ws_rev
+                    n = app.ws.apply(body.get("statements") or [])
+                    # "clean" = nobody else wrote since the client's last known revision.
+                    return self._json(200, {"applied": n, "rev": app.ws_rev, "clean": body.get("baseRev") == base})
+                if parts[:2] == ["api", "action"] and method == "POST":
+                    try:
+                        r = app.ops.action(body.get("node", ""), body.get("kind", ""), body.get("target", ""), self.headers.get("Tailscale-User-Login") or "")
+                    except ValueError as e:
+                        raise WorkspaceError(str(e))
+                    return self._json(200, r)
                 if parts[:2] == ["api", "omniroute"] and method == "POST":
                     threading.Thread(target=app.monitor.refresh_omniroute, daemon=True).start()
                     return self._json(202, {"ok": True})
@@ -715,6 +797,7 @@ def main():
     app = App(cfg)
     if not args.no_sampling:
         app.monitor.start()
+        app.ops.start()
     srv = ThreadingHTTPServer(("127.0.0.1", int(cfg["port"])), make_handler(app))
     srv.daemon_threads = True
     log(f"Raphael Web {VERSION} on http://127.0.0.1:{cfg['port']} · {len(cfg['nodes'])} device · data {cfg['data']}")

@@ -99,7 +99,10 @@ struct PortfolioPage: View {
                     }
                 }
                 .menuStyle(.borderlessButton).menuIndicator(.hidden).fixedSize()
-                Text(subtitle).font(.system(size: 12.5)).foregroundStyle(RTheme.muted)
+                HStack(spacing: 10) {
+                    Text(subtitle).font(.system(size: 12.5)).foregroundStyle(RTheme.muted)
+                    if WorkspaceSync.enabled { WorkspaceSyncBadge() }
+                }
             }
             Spacer()
             if let p = portfolio {

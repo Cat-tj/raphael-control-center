@@ -20,6 +20,10 @@ OPT=(-O -whole-module-optimization)
 [ "$CONFIG" = debug ] && OPT=(-Onone -g)
 SDK=$(xcrun --show-sdk-path)
 ARCH=$(uname -m)
+# The embedded Linux collector is Python inside a Swift string: make sure it still compiles.
+python3 web/extract.py >/dev/null && python3 -c "
+s=open('web/build/collector_linux.sh').read(); compile(s.split(\"<<'RAPHAEL_PY'\n\",1)[1].rsplit('RAPHAEL_PY',1)[0], 'collector', 'exec')" \
+  || { echo "✗ embedded collector script has a Python error"; exit 1; }
 echo "▸ compiling ($CONFIG, $ARCH)"
 swiftc -swift-version 5 "${OPT[@]}" -sdk "$SDK" -target "$ARCH-apple-macos14.0" \
   -module-name RaphaelControlCenter \

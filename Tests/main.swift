@@ -218,6 +218,31 @@ MainActor.assumeIsolated {
         check(unknown.health == .unknown && !unknown.missed, "no run data → unknown, not healthy")
     }
 
+    section("replication capture") {
+        let db = try WorkspaceDB(path: dir + "/capture.sqlite")
+        try db.migrate(WorkspaceSchema.migrations)
+        var got: [[WorkspaceDB.Statement]] = []
+        db.onCommit = { got.append($0) }
+        let now = Date()
+        try db.transaction {
+            try db.run("INSERT INTO portfolio (id, name, created_at, updated_at) VALUES (?,?,?,?)", "pf", "A", now, now)
+            try db.run("UPDATE portfolio SET archived=? WHERE id=?", true, "pf")
+        }
+        check(got.count == 1 && got[0].count == 2, "a committed transaction is captured as one batch")
+        check(got[0][1].args == [.int(1), .text("pf")], "Bool → 1, String kept")
+        if case .double(let d) = got[0][0].args[2] { check(abs(d - now.timeIntervalSince1970) < 0.001, "Date → unix seconds") } else { check(false, "Date → double") }
+        _ = try? db.transaction { try db.run("UPDATE portfolio SET name=? WHERE id=?", "B", "pf"); throw WorkspaceDB.DBError.step("x", "boom") }
+        check(got.count == 1, "a rolled-back transaction is not captured")
+        try db.replaceAll(["portfolio": [["id": "pf2", "name": "Server", "created_at": 1.0, "updated_at": 1.0]]])
+        check(got.count == 1, "an applied server snapshot is not sent back")
+        let ids = try db.query("SELECT id FROM portfolio").compactMap { $0.str("id") }
+        check(ids == ["pf2"], "snapshot replaces local rows")
+        let data = try JSONEncoder().encode(got[0])
+        let back = try JSONDecoder().decode([WorkspaceDB.Statement].self, from: data)
+        check(back == got[0], "statements round-trip through JSON (outbox)")
+        db.onCommit = nil
+    }
+
     section("ordering helper") {
         check(WorkspaceStore.position(in: [], before: nil) == 1024, "empty column")
         check(WorkspaceStore.position(in: [1024, 2048], before: 1) == 1536, "midpoint")

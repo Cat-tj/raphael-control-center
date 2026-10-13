@@ -15,6 +15,21 @@ The Control Center's Monitor and Workspace as a small web app for an always-on L
 | OmniRoute | provider health, usage, quotas and connections (API key read on the server from the configured `.env`) |
 | Portfolio · project board · tasks · activity | the workspace: portfolios, projects, Kanban with drag & drop, task details |
 
+| Insiden | open incidents and 30 days of history (opened when a problem persists, closed when it recovers), plus the action log |
+| Notifikasi | WhatsApp alerts through `hermes send` (open + recovery, one message per round, damped for flapping signals, max 6/h), test message, weekly report |
+
+Alerts cover: website down (2 checks), device unreachable (3 min), temperature ≥ 80 °C, undervoltage,
+disk ≥ 93 %, failed/missed jobs, SSL < 7 days, backups (stale, empty or shrinking — `backups` in the
+config), SD-card errors / read-only root, unexpected reboots (with the likely cause from the previous
+boot's journal) and the home internet being down (website status is held instead of paging for
+every site). The ⌘K palette searches pages, devices, jobs, containers, websites, projects and tasks.
+The app installs as a PWA (manifest + offline shell).
+
+**Actions** (opt-in per kind in `actions`): restart a service from the allow-list or one the device
+reports, restart a container, run a cron/Hermes job now — always behind a confirmation dialog,
+built from validated names (no free-form commands) and logged with who did it. Logs of services,
+containers and job log files are read-only.
+
 ## How it fits with the Mac app
 
 - **Same collector.** `extract.py` copies `MonitorStore.linuxScript` out of the Swift source at
@@ -23,9 +38,14 @@ The Control Center's Monitor and Workspace as a small web app for an always-on L
 - **One collector run per device.** In the Mac app, Monitor → Sumber data → *Raphael Web* takes
   the URL; the Mac then reuses Raphael Web's latest sample (`/api/raw`) for those devices instead
   of SSH-ing in every minute, and falls back to SSH when Raphael Web doesn't answer.
-- **Same workspace format.** The schema is extracted from `WorkspaceSchema.swift`; a
-  `workspace.sqlite` moves between the Mac app and Raphael Web unchanged. Today each keeps its
-  own file (no sync yet).
+- **One workspace.** Raphael Web holds the shared `workspace.sqlite` (schema extracted from
+  `WorkspaceSchema.swift`). With *Sinkronkan workspace* on (Monitor → Sumber data), the Mac app
+  keeps a local copy: every committed local transaction is captured as its write statements,
+  queued in `workspace-outbox.json` (kept while offline) and applied in order through
+  `/api/ws/apply`, which only lets INSERT/UPDATE/DELETE on workspace tables through (SQLite
+  authorizer — no PRAGMA, ATTACH, DDL or transaction control). When the server's revision moves,
+  the Mac pulls `/api/ws/dump` and replaces its copy. An empty server is seeded from the Mac on
+  the first connection; otherwise the server wins (local file backed up first).
 
 ## Run and deploy
 

@@ -19,6 +19,36 @@ final class WorkspaceDB {
 
     let path: String
     private var db: OpaquePointer?
+
+    /// A committed write statement, for replication to Raphael Web.
+    struct Statement: Codable, Equatable {
+        let sql: String
+        let args: [Value]
+        enum Value: Codable, Equatable {
+            case null, int(Int64), double(Double), text(String)
+            init(from decoder: Decoder) throws {
+                let c = try decoder.singleValueContainer()
+                if c.decodeNil() { self = .null }
+                else if let i = try? c.decode(Int64.self) { self = .int(i) }
+                else if let d = try? c.decode(Double.self) { self = .double(d) }
+                else { self = .text(try c.decode(String.self)) }
+            }
+            func encode(to encoder: Encoder) throws {
+                var c = encoder.singleValueContainer()
+                switch self {
+                case .null: try c.encodeNil()
+                case .int(let i): try c.encode(i)
+                case .double(let d): try c.encode(d)
+                case .text(let t): try c.encode(t)
+                }
+            }
+        }
+    }
+    /// Receives the write statements of every committed change (nil = not replicating).
+    var onCommit: (([Statement]) -> Void)?
+    /// Off while a pulled snapshot is being applied, so it isn't sent back.
+    var capturing = true
+    private var captured: [Statement]?
     private static let transient = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
 
     init(path: String) throws {
@@ -80,7 +110,24 @@ final class WorkspaceDB {
         defer { sqlite3_finalize(stmt) }
         let rc = sqlite3_step(stmt)
         guard rc == SQLITE_DONE || rc == SQLITE_ROW else { throw DBError.step(sql, lastError) }
+        if onCommit != nil, capturing {
+            let st = Statement(sql: sql, args: args.map(Self.value))
+            if captured != nil { captured!.append(st) } else { onCommit?([st]) }        // outside a transaction = committed now
+        }
         return Int(sqlite3_changes(db))
+    }
+
+    static func value(_ a: Any?) -> Statement.Value {
+        switch a {
+        case nil, is NSNull: .null
+        case let v as Bool: .int(v ? 1 : 0)
+        case let v as Int: .int(Int64(v))
+        case let v as Int64: .int(v)
+        case let v as Double: .double(v)
+        case let v as Date: .double(v.timeIntervalSince1970)
+        case let v as String: .text(v)
+        default: .text("\(a!)")
+        }
     }
 
     func query(_ sql: String, _ args: Any?...) throws -> [Row] { try query(sql, args: args) }
@@ -119,14 +166,50 @@ final class WorkspaceDB {
     /// Runs `body` in one transaction; any throw rolls everything back.
     func transaction<T>(_ body: () throws -> T) throws -> T {
         try exec("BEGIN IMMEDIATE")
+        captured = onCommit != nil && capturing ? [] : nil
         do {
             let r = try body()
             try exec("COMMIT")
+            let done = captured
+            captured = nil
+            if let done, !done.isEmpty { onCommit?(done) }
             return r
         } catch {
+            captured = nil
             try? exec("ROLLBACK")
             throw error
         }
+    }
+
+    /// Replaces every table's rows with `tables` (a snapshot from Raphael Web), in one transaction,
+    /// without capturing it for replication.
+    func replaceAll(_ tables: [String: [[String: Any?]]]) throws {
+        capturing = false
+        defer { capturing = true }
+        let names = try query("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'").compactMap { $0.str("name") }
+        try exec("PRAGMA foreign_keys = OFF")
+        defer { try? exec("PRAGMA foreign_keys = ON") }
+        try transaction {
+            for t in names { try run("DELETE FROM \"\(t)\"") }
+            for (t, rows) in tables where names.contains(t) {
+                let cols = Set(try query("SELECT name FROM pragma_table_info(?)", t).compactMap { $0.str("name") })
+                for row in rows {
+                    let keys = row.keys.filter { cols.contains($0) }.sorted()
+                    guard !keys.isEmpty else { continue }
+                    let sql = "INSERT INTO \"\(t)\" (" + keys.map { "\"\($0)\"" }.joined(separator: ",") + ") VALUES (" + keys.map { _ in "?" }.joined(separator: ",") + ")"
+                    try run(sql, args: keys.map { row[$0] ?? nil })
+                }
+            }
+        }
+    }
+
+    /// Every row of every table (to seed an empty Raphael Web from this Mac).
+    func dumpAll() throws -> [String: [Row]] {
+        var out: [String: [Row]] = [:]
+        for t in try query("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'").compactMap({ $0.str("name") }) {
+            out[t] = try query("SELECT * FROM \"\(t)\"")
+        }
+        return out
     }
 
     // MARK: Schema versioning

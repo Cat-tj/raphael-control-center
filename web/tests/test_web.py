@@ -19,6 +19,8 @@ sys.path.insert(0, WEB)
 import core  # noqa: E402
 import files  # noqa: E402
 import hermes  # noqa: E402
+import operations  # noqa: E402
+import ops  # noqa: E402
 import server  # noqa: E402
 from workspace import Workspace, WorkspaceError, make_key, position  # noqa: E402
 
@@ -191,6 +193,33 @@ class Store(unittest.TestCase):
         with self.assertRaises(WorkspaceError):
             self.ws.create_project({"name": "y", "key": "X"}) if self.ws.create_project({"name": "z", "key": "X"}) else None
 
+    def test_replication_apply_is_sandboxed(self):
+        bumps = []
+        self.ws.on_change = lambda: bumps.append(1)
+        now = time.time()
+        n = self.ws.apply([
+            {"sql": "INSERT INTO portfolio (id, name, description, color, archived, sort, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?)",
+             "args": ["pf1", "Dari Mac; dengan titik koma", "", "violet", 0, 1, now, now]},
+            {"sql": "INSERT INTO project (id, portfolio_id, name, key, created_at, updated_at) VALUES (?,?,?,?,?,?)", "args": ["p1", "pf1", "Mac", "MAC", now, now]},
+            {"sql": "UPDATE project SET description=? WHERE id=?", "args": ["x", "p1"]},
+        ])
+        self.assertEqual((n, len(bumps)), (3, 1))
+        self.assertEqual(self.ws.dump()["project"][0]["description"], "x")
+        for bad in ["PRAGMA foreign_keys = OFF", "DROP TABLE task", "ATTACH DATABASE '/tmp/x.db' AS x", "CREATE TABLE evil (a)",
+                    "DELETE FROM sqlite_master", "UPDATE project SET name='a' WHERE id='p1'; DROP TABLE task", "COMMIT"]:
+            with self.assertRaises(WorkspaceError, msg=bad):
+                self.ws.apply([{"sql": bad, "args": []}])
+        # a failing batch leaves nothing behind
+        with self.assertRaises(WorkspaceError):
+            self.ws.apply([{"sql": "UPDATE project SET name=? WHERE id=?", "args": ["ganti", "p1"]}, {"sql": "INSERT INTO nope VALUES (1)", "args": []}])
+        self.assertEqual(self.ws.dump()["project"][0]["name"], "Mac")
+        self.assertIn("task", self.ws.tables())
+        # deferred foreign keys: a child before its parent in one batch is fine, a dangling one is not
+        self.ws.apply([{"sql": "INSERT INTO task (id, number, project_id, parent_id, title, created_at, updated_at) VALUES (?,?,?,?,?,?,?)", "args": ["t2", 2, "p1", "t1", "anak", now, now]},
+                       {"sql": "INSERT INTO task (id, number, project_id, title, created_at, updated_at) VALUES (?,?,?,?,?,?)", "args": ["t1", 1, "p1", "induk", now, now]}])
+        with self.assertRaises(WorkspaceError):
+            self.ws.apply([{"sql": "INSERT INTO task (id, number, project_id, title, created_at, updated_at) VALUES (?,?,?,?,?,?)", "args": ["t3", 3, "missing", "x", now, now]}])
+
     def test_reads_mac_app_database(self):
         # A workspace.sqlite written by the Mac app opens unchanged (same schema, user_version 1).
         db = sqlite3.connect(os.path.join(self.dir, "w.sqlite"))
@@ -277,6 +306,18 @@ class Http(unittest.TestCase):
         self.assertEqual(code, 200)
         self.assertEqual(self.req("GET", "/api/omniroute", headers={})[1]["state"], "idle")
 
+    def test_replication_endpoints(self):
+        rev0 = self.req("GET", "/api/ws/rev", headers={})[1]["rev"]
+        now = time.time()
+        code, r, _ = self.req("POST", "/api/ws/apply", {"baseRev": rev0, "statements": [
+            {"sql": "INSERT INTO portfolio (id, name, created_at, updated_at) VALUES (?,?,?,?)", "args": ["pfx", "Sync", now, now]}]})
+        self.assertEqual((code, r["applied"], r["rev"], r["clean"]), (200, 1, rev0 + 1, True))
+        dump = self.req("GET", "/api/ws/dump", headers={})[1]
+        self.assertEqual(dump["rev"], rev0 + 1)
+        self.assertIn("pfx", [p["id"] for p in dump["tables"]["portfolio"]])
+        self.assertEqual(self.req("POST", "/api/ws/apply", {"statements": [{"sql": "DROP TABLE task", "args": []}]})[0], 400)
+        self.assertEqual(self.req("POST", "/api/ws/apply", {"statements": []}, headers={"Content-Type": "application/json"})[0], 403)
+
     def test_bad_json(self):
         r = urllib.request.Request(self.base + "/api/project", method="POST", data=b"{nope", headers={"X-Raphael": "1", "Content-Type": "application/json"})
         with self.assertRaises(urllib.error.HTTPError) as e:
@@ -361,7 +402,132 @@ class Hermes(unittest.TestCase):
         self.assertIn("error", hermes.snapshot(tempfile.mkdtemp()))
 
 
+class Ops(unittest.TestCase):
+    NODES = [{"id": "a", "name": "Box A"}, {"id": "b", "name": "Box B"}]
+
+    def conds(self, **kw):
+        base = dict(nodes=self.NODES, details={"a": core.parse(Parse.SAMPLE, now=BASE), "b": {"error": "timeout"}},
+                    last={"a": {"temp": 82}}, sites=[{"name": "S", "url": "https://s"}], site_status={"https://s": {"code": 502, "ok": False}},
+                    certs={"https://s": BASE + 3 * 86400}, backups=[{"name": "DB", "nodeName": "Box A", "problem": "backup terakhir 40 jam lalu"}],
+                    health={"a": {"mmcErrors": 2}}, internet_ok=True, now=BASE)
+        base.update(kw)
+        return ops.conditions(**base)
+
+    def test_conditions(self):
+        c = self.conds()
+        kinds = {v["kind"] for v in c.values()}
+        self.assertTrue({"node", "temp", "power", "disk", "job", "site", "ssl", "backup", "sdcard"} <= kinds, kinds)
+        self.assertIn("node:b", c)
+        offline = self.conds(internet_ok=False)
+        self.assertIn("internet", offline)
+        self.assertFalse(any(k.startswith("site:") for k in offline))       # website status held while offline
+
+    def test_tracker_hysteresis_and_message(self):
+        tr = ops.Tracker()
+        site = {"site:https://s": {"kind": "site", "node": "S", "title": "S down", "detail": "HTTP 502"}}
+        self.assertEqual(tr.step(site, 0), ([], []))                         # 1st bad check: not yet
+        opened, _ = tr.step(site, 60)
+        self.assertEqual([i["key"] for i in opened], ["site:https://s"])
+        self.assertEqual(tr.step(site, 120), ([], []))                       # still open, no repeat
+        _, closed = tr.step({}, 900)
+        self.assertEqual(closed[0]["ended"] - closed[0]["started"], 840)
+        msg = ops.message(opened, closed, [{"node": "Box A", "when": "13 Okt 16:30", "detail": "kemungkinan karena terlalu panas"}], "https://x")
+        self.assertIn("*S down*", msg)
+        self.assertIn("Pulih: S down (setelah 14 menit)", msg)
+        self.assertIn("restart sendiri", msg)
+        self.assertIsNone(ops.message([], [], []))
+        flap = ops.Tracker()
+        flap.step(site, 0)
+        flap.step({}, 60)
+        self.assertEqual(flap.step(site, 120), ([], []))                     # a blip resets the streak
+
+    def test_flapping_is_damped(self):
+        tr = ops.Tracker()
+        p = {"power:a": {"kind": "power", "node": "A", "title": "A undervoltage", "detail": ""}}
+        tr.step(p, 0)
+        opened, _ = tr.step(p, 60)
+        self.assertFalse(opened[0]["quiet"])
+        for i in range(9):                                                   # 9 clean minutes: still open
+            self.assertEqual(tr.step({}, 120 + i * 60), ([], []))
+        _, closed = tr.step({}, 720)
+        self.assertEqual(len(closed), 1)
+        tr.step(p, 800)
+        again, _ = tr.step(p, 860)                                           # recurrence within 6 h: recorded, quiet
+        self.assertTrue(again[0]["quiet"])
+        self.assertIsNone(ops.message(again, [], []))
+
+    def test_backup_problem(self):
+        cfg = {"name": "DB", "glob": "/x/*.dump", "maxAgeHours": 26, "minBytes": 1000}
+        now = BASE
+        self.assertEqual(operations.backup_problem(cfg, {"files": []}, now)[0], "tidak ada file backup")
+        self.assertIn("kosong", operations.backup_problem(cfg, {"files": [["/x/a", 0, now]]}, now)[0])
+        self.assertIn("40 jam", operations.backup_problem(cfg, {"files": [["/x/a", 5000, now - 40 * 3600]]}, now)[0])
+        self.assertIn("turun drastis", operations.backup_problem(cfg, {"files": [["/x/a", 9000, now - 90000], ["/x/b", 2000, now]]}, now)[0])
+        self.assertIsNone(operations.backup_problem(cfg, {"files": [["/x/a", 9000, now - 90000], ["/x/b", 9100, now - 3600]]}, now)[0])
+        self.assertEqual(operations.backup_problem(cfg, None, now)[0], "tidak bisa dicek")
+
+    def test_actions_are_allowlisted_and_quoted(self):
+        detail = {"services": [{"unit": "app.service", "user": True}], "failed": ["nginx.service"],
+                  "containers": [{"name": "web-1"}],
+                  "jobs": [{"id": "c1", "kind": "cron", "name": "backup", "command": "echo 'hi'; rm -rf /tmp/x", "user": "root", "system": False},
+                           {"id": "s1", "kind": "cron", "name": "logrotate", "command": "x", "system": True},
+                           {"id": "hermes:michael:abc123", "kind": "hermes", "name": "seo", "system": False}]}
+        cfg = {"actions": {"services": ["caddy"], "containers": True, "jobs": True}}
+        self.assertEqual(ops.action_command("restart-service", "app.service", detail, cfg)[0], "systemctl --user restart app.service")
+        self.assertEqual(ops.action_command("restart-service", "nginx.service", detail, cfg)[0], "sudo -n systemctl restart nginx.service")
+        self.assertEqual(ops.action_command("restart-service", "caddy", detail, cfg)[0], "sudo -n systemctl restart caddy.service")
+        with self.assertRaises(ValueError):
+            ops.action_command("restart-service", "sshd", detail, cfg)                    # not allowed
+        with self.assertRaises(ValueError):
+            ops.action_command("restart-service", "x; reboot", detail, cfg)               # injection
+        self.assertEqual(ops.action_command("restart-container", "web-1", detail, cfg)[0], "docker restart web-1")
+        with self.assertRaises(ValueError):
+            ops.action_command("restart-container", "web-1", detail, {"actions": {}})     # containers not enabled
+        cmd = ops.action_command("run-job", "c1", detail, cfg)[0]
+        self.assertEqual(cmd, "sudo -n -u root sh -c 'echo '\"'\"'hi'\"'\"'; rm -rf /tmp/x'")
+        with self.assertRaises(ValueError):
+            ops.action_command("run-job", "s1", detail, cfg)                              # system job
+        self.assertIn("HERMES_HOME=~/.hermes/profiles/michael", ops.action_command("run-job", "hermes:michael:abc123", detail, cfg)[0])
+        with self.assertRaises(ValueError):
+            ops.logs_command("container", "other", detail)
+        self.assertIn("journalctl --user -u app.service", ops.logs_command("service", "app", detail))
+
+    def test_weekly_report_and_reason(self):
+        now = BASE
+        inc = [{"kind": "site", "title": "S down", "started": now - 3600, "ended": now - 3000}, {"kind": "job", "title": "Job x gagal", "started": now - 100, "ended": None}]
+        r = ops.weekly_report(now, inc, [{"name": "S", "url": "https://s"}], {"https://s": 0.995}, self.NODES, {"a": {"avg": 61, "max": 79}}, 123456, 4, 1)
+        for want in ("Laporan mingguan", "S 99.5%", "Insiden: 2", "10 menit", "masih terbuka", "Box A: rata-rata 61°C", "123.456", "Task selesai: 4"):
+            self.assertIn(want, r)
+        self.assertIn("under-voltage", operations.guess_reason("kernel: Under-voltage detected!"))
+        self.assertIn("watchdog", operations.guess_reason("watchdog: watchdog0: ..."))
+
+    def test_rollup_and_incident_store(self):
+        d = tempfile.mkdtemp()
+        cfg = {"nodes": [{"id": "a", "name": "A", "local": True}], "sites": [], "data": d}
+        app = server.App({**cfg, "port": 0})
+        m = app.metrics
+        h = int(time.time() // 3600 * 3600) - 3 * 3600
+        for i in range(6):
+            m.add_sample("a", {"t": h + i * 600, "cpu": 0.1 * i, "mem": 0.5, "swap": 0, "disk": 0.4, "load": 1, "temp": 60 + i, "rx": 0, "tx": 0, "thr": 1 if i == 3 else 0})
+        app.ops.rollup()
+        rows = app.ops.history30("a")
+        self.assertEqual(len(rows), 1)
+        self.assertEqual((rows[0]["tempMax"], rows[0]["thr"]), (65, 1))
+        app.ops.record_event("reboot", "reboot:a", "A", "A restart sendiri", "x", time.time() - 10)
+        self.assertEqual(app.ops.incidents(1)[0]["kind"], "reboot")
+        self.assertEqual(app.ops.notify("hi")["error"], "notifikasi nonaktif")
+
+
 class Collector(unittest.TestCase):
+    def test_collector_python_compiles(self):
+        # A syntax error here makes every device look unreachable (and pages someone).
+        s = open(os.path.join(BUILD, "collector_linux.sh"), encoding="utf-8").read()
+        body = s.split("<<'RAPHAEL_PY'\n", 1)[1].rsplit("RAPHAEL_PY", 1)[0]
+        compile(body.replace("__SLOW__", "0"), "collector_linux", "exec")
+        import files as f, operations as o
+        compile(f.SCRIPT, "files", "exec")
+        compile(o.HEALTH_SCRIPT, "health", "exec")
+
     def test_extracted_from_swift(self):
         s = open(os.path.join(BUILD, "collector_linux.sh"), encoding="utf-8").read()
         self.assertTrue(s.startswith("python3 - <<'RAPHAEL_PY'"))
