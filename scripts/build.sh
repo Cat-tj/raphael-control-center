@@ -36,7 +36,7 @@ swiftc -swift-version 5 "${OPT[@]}" -sdk "$SDK" -target "$ARCH-apple-macos14.0" 
   -o "$APP/Contents/MacOS/$EXE" 2>&1 | grep -E ": error:" || true
 [ -x "$APP/Contents/MacOS/$EXE" ] || { echo "✗ build failed"; exit 1; }
 
-cp Resources/AppIcon.icns Resources/MenuBarIcon*.png Resources/AltoraLogo.png "$APP/Contents/Resources/"
+cp Resources/AppIcon.icns Resources/MenuBarIcon*.png Resources/AltoraLogo.png Resources/WorldCountries.json "$APP/Contents/Resources/"
 
 cat > "$APP/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>

@@ -86,13 +86,77 @@ fn cf_call(token: &str, path: &str, body: Option<&Value>) -> Result<Value, CfErr
 
 pub fn cloudflare_zones(token: &str) -> Result<Vec<Value>, CfError> {
     let list = cf_call(token, "/zones?per_page=50&status=active", None)?;
-    let since = chrono::Local::now().checked_sub_signed(chrono::Duration::days(6)).unwrap().format("%Y-%m-%d").to_string();
+    let since = chrono::Utc::now().checked_sub_signed(chrono::Duration::days(6)).unwrap().format("%Y-%m-%d").to_string();
     let mut out = vec![];
     for z in list.get("result").and_then(|r| r.as_array()).cloned().unwrap_or_default() {
         let id = z["id"].as_str().unwrap_or("");
         let q = format!("{{ viewer {{ zones(filter: {{zoneTag: \"{id}\"}}) {{ httpRequests1dGroups(limit: 7, orderBy: [date_ASC], filter: {{date_geq: \"{since}\"}}) {{ dimensions {{ date }} uniq {{ uniques }} sum {{ requests bytes cachedRequests threats pageViews countryMap {{ clientCountryName requests }} responseStatusMap {{ edgeResponseStatus requests }} }} }} }} }} }}");
         let j = cf_call(token, "/graphql", Some(&json!({"query": q})))?;
         let groups = j.pointer("/data/viewer/zones/0/httpRequests1dGroups").and_then(|g| g.as_array()).cloned().unwrap_or_default();
+        out.push(cloudflare_zone(&z, &groups));
+    }
+    out.sort_by_key(|z| -z["days"].as_array().map(|d| d.iter().map(|x| x["requests"].as_i64().unwrap_or(0)).sum::<i64>()).unwrap_or(0));
+    Ok(out)
+}
+
+#[cfg(test)]
+mod cloudflare_tests {
+    use super::*;
+
+    #[test]
+    fn all_countries_and_unknown_origins_aggregate_across_days() {
+        let zone = json!({"id": "busy", "name": "example.test"});
+        let countries = [
+            ("US", 40, 3), ("ID", 30, 50), ("SG", 25, 2), ("JP", 20, 1),
+            ("GB", 15, 2), ("DE", 10, 1), ("AU", 8, 1), ("BR", 7, 1), ("XX", 4, 2),
+        ];
+        let mut first: Vec<Value> = countries.iter().map(|(code, count, _)|
+            json!({"clientCountryName": code, "requests": count})).collect();
+        let mut second: Vec<Value> = countries.iter().map(|(code, _, count)|
+            json!({"clientCountryName": code, "requests": count})).collect();
+        first.push(json!({"clientCountryName": null, "requests": 5}));
+        second.push(json!({"clientCountryName": "", "requests": 6}));
+        let groups = vec![
+            json!({"dimensions": {"date": "2026-10-12"}, "uniq": {"uniques": 7}, "sum": {
+                "requests": 200, "pageViews": 40, "bytes": 20000, "cachedRequests": 100, "threats": 1,
+                "countryMap": first, "responseStatusMap": [{"edgeResponseStatus": 200, "requests": 180}, {"edgeResponseStatus": 404, "requests": 20}]}}),
+            json!({"dimensions": {"date": "2026-10-13"}, "uniq": {"uniques": 5}, "sum": {
+                "requests": 300, "pageViews": 60, "bytes": 30000, "cachedRequests": 150, "threats": 1,
+                "countryMap": second, "responseStatusMap": [{"edgeResponseStatus": 200, "requests": 280}, {"edgeResponseStatus": 500, "requests": 20}]}}),
+        ];
+        let parsed = cloudflare_zone(&zone, &groups);
+        assert_eq!(parsed["countries"], json!([
+            ["ID", 80], ["US", 43], ["SG", 27], ["JP", 21], ["GB", 17],
+            ["?", 11], ["DE", 11], ["AU", 9], ["BR", 8], ["XX", 6]
+        ]));
+        assert_eq!(parsed["statuses"], json!([["200", 460], ["404", 20], ["500", 20]]));
+        assert_eq!(parsed["days"], json!([
+            {"date": "2026-10-12", "requests": 200, "visitors": 7, "pageViews": 40,
+             "bytes": 20000, "cached": 100, "threats": 1},
+            {"date": "2026-10-13", "requests": 300, "visitors": 5, "pageViews": 60,
+             "bytes": 30000, "cached": 150, "threats": 1}
+        ]));
+        assert_eq!(parsed["id"], zone["id"]);
+        assert_eq!(parsed["name"], zone["name"]);
+    }
+
+    #[test]
+    fn empty_analytics_and_missing_optional_metrics_keep_contract() {
+        let zone = json!({"id": "empty", "name": "empty.test"});
+        let empty = cloudflare_zone(&zone, &[]);
+        assert_eq!(empty, json!({"id": "empty", "name": "empty.test", "days": [], "countries": [], "statuses": []}));
+        let zero = cloudflare_zone(&zone, &[json!({"dimensions": {"date": "2026-10-13"}, "sum": {
+            "countryMap": [{"clientCountryName": "ID", "requests": 0}, {"requests": null}]}})]);
+        assert_eq!(zero["countries"], json!([["?", 0], ["ID", 0]]));
+        assert_eq!(zero["statuses"], json!([]));
+        assert_eq!(zero["days"], json!([{ "date": "2026-10-13", "requests": 0,
+            "visitors": 0, "pageViews": 0, "bytes": 0, "cached": 0, "threats": 0 }]));
+    }
+}
+
+// Keep the complete country distribution. The UI may rank countries, but a
+// world map must not silently lose countries outside a top-six list.
+fn cloudflare_zone(z: &Value, groups: &[Value]) -> Value {
         let (mut days, mut countries, mut statuses) = (vec![], Map::new(), Map::new());
         for g in groups {
             let s = &g["sum"];
@@ -100,7 +164,7 @@ pub fn cloudflare_zones(token: &str) -> Result<Vec<Value>, CfError> {
             days.push(json!({"date": g.pointer("/dimensions/date"), "requests": n("requests"), "visitors": g.pointer("/uniq/uniques").and_then(|v| v.as_i64()).unwrap_or(0),
                              "bytes": n("bytes"), "cached": n("cachedRequests"), "threats": n("threats"), "pageViews": n("pageViews")}));
             for c in s.get("countryMap").and_then(|c| c.as_array()).cloned().unwrap_or_default() {
-                let k = c.get("clientCountryName").and_then(|v| v.as_str()).unwrap_or("?").to_string();
+                let k = c.get("clientCountryName").and_then(|v| v.as_str()).filter(|v| !v.is_empty()).unwrap_or("?").to_string();
                 let v = countries.get(&k).and_then(|v| v.as_i64()).unwrap_or(0) + c.get("requests").and_then(|v| v.as_i64()).unwrap_or(0);
                 countries.insert(k, json!(v));
             }
@@ -111,14 +175,11 @@ pub fn cloudflare_zones(token: &str) -> Result<Vec<Value>, CfError> {
             }
         }
         let mut cs: Vec<(String, i64)> = countries.into_iter().map(|(k, v)| (k, v.as_i64().unwrap_or(0))).collect();
-        cs.sort_by(|a, b| b.1.cmp(&a.1));
+        cs.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
         let mut ss: Vec<(String, i64)> = statuses.into_iter().map(|(k, v)| (k, v.as_i64().unwrap_or(0))).collect();
         ss.sort();
-        out.push(json!({"id": id, "name": z["name"], "days": days, "countries": cs.into_iter().take(6).map(|(k, v)| json!([k, v])).collect::<Vec<_>>(),
-                        "statuses": ss.into_iter().map(|(k, v)| json!([k, v])).collect::<Vec<_>>()}));
-    }
-    out.sort_by_key(|z| -z["days"].as_array().map(|d| d.iter().map(|x| x["requests"].as_i64().unwrap_or(0)).sum::<i64>()).unwrap_or(0));
-    Ok(out)
+        json!({"id": z["id"], "name": z["name"], "days": days, "countries": cs.into_iter().map(|(k, v)| json!([k, v])).collect::<Vec<_>>(),
+                        "statuses": ss.into_iter().map(|(k, v)| json!([k, v])).collect::<Vec<_>>()})
 }
 
 pub enum OmniError {

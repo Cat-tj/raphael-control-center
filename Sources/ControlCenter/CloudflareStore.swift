@@ -22,10 +22,44 @@ struct CFZone: Identifiable, Hashable {
     func hash(into h: inout Hasher) { h.combine(id) }
 
     var requests: Int { days.reduce(0) { $0 + $1.requests } }
+    /// Daily unique IPs summed across the available days; not a deduplicated period total.
     var visitors: Int { days.reduce(0) { $0 + $1.visitors } }
+    var latestDay: CFDay? { days.filter { !$0.date.isEmpty }.max { $0.date < $1.date } }
+    var pageViews: Int { days.reduce(0) { $0 + $1.pageViews } }
+    var countryRequests: Int { countries.reduce(0) { $0 + $1.1 } }
     var bytes: Double { days.reduce(0) { $0 + $1.bytes } }
     var cachedRatio: Double { requests > 0 ? Double(days.reduce(0) { $0 + $1.cached }) / Double(requests) : 0 }
     var threats: Int { days.reduce(0) { $0 + $1.threats } }
+
+    /// Keeps every country returned by Cloudflare. The map and ranking use request
+    /// counts, while visitor estimates remain daily unique IP counts.
+    func withDailyGroups(_ groups: [[String: Any]]) -> CFZone {
+        var zone = self
+        zone.days = []
+        var countries: [String: Int] = [:], statuses: [Int: Int] = [:]
+        for group in groups {
+            let sum = group["sum"] as? [String: Any] ?? [:]
+            func count(_ key: String) -> Int { max(0, (sum[key] as? NSNumber)?.intValue ?? 0) }
+            zone.days.append(CFDay(date: ((group["dimensions"] as? [String: Any])?["date"] as? String) ?? "",
+                                  requests: count("requests"),
+                                  visitors: max(0, ((group["uniq"] as? [String: Any])?["uniques"] as? NSNumber)?.intValue ?? 0),
+                                  bytes: max(0, (sum["bytes"] as? NSNumber)?.doubleValue ?? 0),
+                                  cached: count("cachedRequests"), threats: count("threats"), pageViews: count("pageViews")))
+            for country in sum["countryMap"] as? [[String: Any]] ?? [] {
+                let value = max(0, (country["requests"] as? NSNumber)?.intValue ?? 0)
+                guard value > 0 else { continue }
+                let raw = (country["clientCountryName"] as? String ?? "").trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
+                countries[["", "?", "ZZ"].contains(raw) ? "XX" : raw, default: 0] += value  // one "unknown" row
+            }
+            for status in sum["responseStatusMap"] as? [[String: Any]] ?? [] {
+                statuses[(status["edgeResponseStatus"] as? NSNumber)?.intValue ?? 0, default: 0] += max(0, (status["requests"] as? NSNumber)?.intValue ?? 0)
+            }
+        }
+        zone.days.sort { $0.date < $1.date }
+        zone.countries = countries.sorted { $0.value == $1.value ? $0.key < $1.key : $0.value > $1.value }.map { ($0.key, $0.value) }
+        zone.statuses = statuses.sorted { $0.key < $1.key }.map { ($0.key, $0.value) }
+        return zone
+    }
 }
 
 /// Website traffic from Cloudflare's GraphQL Analytics API (7 days, per zone).
@@ -79,7 +113,15 @@ final class CloudflareStore: ObservableObject {
         }
     }
 
-    enum CFError: Error { case permission, api(String) }
+    enum CFError: LocalizedError {
+        case permission, api(String)
+        var errorDescription: String? {
+            switch self {
+            case .permission: return "Token Cloudflare tidak punya izin Analytics / Zone Read."
+            case .api(let message): return message
+            }
+        }
+    }
 
     /// Env names checked in the primary Hermes device's .env, most specific first.
     static let envKeys = ["CLOUDFLARE_API_TOKEN_FULL", "CF_API_TOKEN_FULL", "API_TOKEN_FULL", "CLOUDFLARE_ANALYTICS_TOKEN",
@@ -131,9 +173,9 @@ final class CloudflareStore: ObservableObject {
             guard let id = z["id"] as? String, let name = z["name"] as? String else { return nil }
             return CFZone(id: id, name: name)
         }
-        let since = ISO8601DateFormatter.string(from: Date().addingTimeInterval(-6 * 86400), timeZone: .current, formatOptions: [.withFullDate])
+        let since = ISO8601DateFormatter.string(from: Date().addingTimeInterval(-6 * 86400), timeZone: TimeZone(secondsFromGMT: 0)!, formatOptions: [.withFullDate])
         var out: [CFZone] = []
-        for var z in zones {
+        for z in zones {
             let q = """
             { viewer { zones(filter: {zoneTag: "\(z.id)"}) { httpRequests1dGroups(limit: 7, orderBy: [date_ASC], filter: {date_geq: "\(since)"}) {
               dimensions { date } uniq { uniques }
@@ -141,25 +183,10 @@ final class CloudflareStore: ObservableObject {
                     countryMap { clientCountryName requests } responseStatusMap { edgeResponseStatus requests } } } } } }
             """
             let j = try await call(token, "/graphql", body: ["query": q])
-            let groups = (((j["data"] as? [String: Any])?["viewer"] as? [String: Any])?["zones"] as? [[String: Any]])?.first?["httpRequests1dGroups"] as? [[String: Any]] ?? []
-            var countries: [String: Int] = [:], statuses: [Int: Int] = [:]
-            for g in groups {
-                let sum = g["sum"] as? [String: Any] ?? [:]
-                func n(_ k: String) -> Int { (sum[k] as? NSNumber)?.intValue ?? 0 }
-                z.days.append(CFDay(date: ((g["dimensions"] as? [String: Any])?["date"] as? String) ?? "",
-                                    requests: n("requests"), visitors: ((g["uniq"] as? [String: Any])?["uniques"] as? NSNumber)?.intValue ?? 0,
-                                    bytes: (sum["bytes"] as? NSNumber)?.doubleValue ?? 0, cached: n("cachedRequests"),
-                                    threats: n("threats"), pageViews: n("pageViews")))
-                for c in sum["countryMap"] as? [[String: Any]] ?? [] {
-                    countries[c["clientCountryName"] as? String ?? "?", default: 0] += (c["requests"] as? NSNumber)?.intValue ?? 0
-                }
-                for s in sum["responseStatusMap"] as? [[String: Any]] ?? [] {
-                    statuses[(s["edgeResponseStatus"] as? NSNumber)?.intValue ?? 0, default: 0] += (s["requests"] as? NSNumber)?.intValue ?? 0
-                }
+            guard let groups = (((j["data"] as? [String: Any])?["viewer"] as? [String: Any])?["zones"] as? [[String: Any]])?.first?["httpRequests1dGroups"] as? [[String: Any]] else {
+                throw CFError.api("Cloudflare tidak mengirim data Analytics untuk \(z.name).")
             }
-            z.countries = countries.sorted { $0.value > $1.value }.prefix(6).map { ($0.key, $0.value) }
-            z.statuses = statuses.sorted { $0.key < $1.key }.map { ($0.key, $0.value) }
-            out.append(z)
+            out.append(z.withDailyGroups(groups))
         }
         return out.sorted { $0.requests > $1.requests }
     }

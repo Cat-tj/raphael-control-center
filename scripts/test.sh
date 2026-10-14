@@ -9,3 +9,4 @@ swiftc -swift-version 5 -Onone -sdk "$SDK" -target "$(uname -m)-apple-macos14.0"
   Sources/Workspace/*.swift Sources/ControlCenter/Jobs.swift Tests/*.swift -o build/workspace-tests 2>&1 | grep -E ": error:" || true
 [ -x build/workspace-tests ] || { echo "✗ test build failed"; exit 1; }
 build/workspace-tests
+python3 Tests/traffic-analytics.py

@@ -47,7 +47,7 @@ containers and job log files are read-only.
 ## How it fits with the Mac app
 
 - **Same collector.** `remote/collector_linux.sh` is the one script every device runs (it started
-  in the Swift app, which keeps a copy in `legacy/`). Job, alert and parsing rules are tested on
+  in the Swift app, which embeds the same script in `Sources/ControlCenter/MonitorStore.swift`). Job, alert and parsing rules are tested on
   the same cases in Python and Rust.
 - **One collector run per device.** In the Mac app, Monitor → Sumber data → *Raphael Web* takes
   the URL; the Mac then reuses Raphael Web's latest sample (`/api/raw`) for those devices instead

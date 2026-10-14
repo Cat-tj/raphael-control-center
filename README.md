@@ -77,6 +77,13 @@ Linux build dependencies: `libwebkit2gtk-4.1-dev libayatana-appindicator3-dev li
 
 ## Data
 
+Monitor → Traffic includes a per-domain Cloudflare view: daily unique IPs, page views,
+request trends, and a country map of request origins. Unique IPs are counted within
+each UTC day; their seven-day sum is not a deduplicated visitor count. Country totals
+include all Cloudflare requests and may include bots. The offline map uses
+[Natural Earth country outlines](https://www.naturalearthdata.com/about/terms-of-use/)
+(public domain), bundled in `Resources/WorldCountries.json`.
+
 - App settings: the OS app-config folder (`id.altora.raphael-desktop/settings.json`); the local
   server's config and data under the app-data folder (`raphael-web/`).
 - Server: `~/.config/raphael-web/config.json`, data in `~/.local/share/raphael-web/`.

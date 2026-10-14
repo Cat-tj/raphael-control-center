@@ -535,10 +535,12 @@ struct MonitorPage: View {
                     Spacer()
                     if cf.state == .loading { ProgressView().controlSize(.mini) }
                 }
-                ForEach(NodeStore.shared.nodes.filter { mon.detail[$0.id]?.tunnel != nil && (device.isAll || scope.contains($0)) }) { n in
+                cloudflareBlock
+                let tunnelNodes = NodeStore.shared.nodes.filter { mon.detail[$0.id]?.tunnel != nil && (device.isAll || scope.contains($0)) }
+                if !tunnelNodes.isEmpty { Divider().overlay(RTheme.line) }
+                ForEach(tunnelNodes) { n in
                     tunnelBlock(n, mon.detail[n.id]!.tunnel!)
                 }
-                cloudflareBlock
             }
         }
     }
@@ -593,13 +595,13 @@ struct MonitorPage: View {
 
 
     @ViewBuilder private var cloudflareBlock: some View {
-        Divider().overlay(RTheme.line)
         HStack(spacing: 8) {
             Image(systemName: "chart.bar.xaxis").foregroundStyle(RTheme.amber)
             Text("Cloudflare Analytics · 7 hari").font(.system(size: 13, weight: .semibold))
             Spacer()
             if let at = cf.loadedAt { Text(at.ago).font(.system(size: 11)).foregroundStyle(RTheme.muted) }
         }
+        WebsiteTrafficView(zones: analyticsZones, unavailableReason: analyticsReason, snapshotNote: analyticsSnapshotNote)
         switch cf.state {
         case .noToken, .noPermission:
             VStack(alignment: .leading, spacing: 8) {
@@ -623,39 +625,38 @@ struct MonitorPage: View {
         case .error(let e):
             Text(e).font(.system(size: 12, design: .monospaced)).foregroundStyle(RTheme.red)
         case .loading where cf.zones.isEmpty:
-            Text("Memuat…").font(.system(size: 12)).foregroundStyle(RTheme.muted)
+            EmptyView()
         default:
-            ForEach(cf.zones) { z in zoneRow(z) }
+            EmptyView()
         }
     }
 
-    private func zoneRow(_ z: CFZone) -> some View {
-        HStack(alignment: .top, spacing: 14) {
-            VStack(alignment: .leading, spacing: 2) {
-                Text(z.name).font(.system(size: 13, weight: .bold))
-                Text("\(z.requests.compact) request · \(z.visitors.compact) pengunjung").font(.system(size: 11.5)).foregroundStyle(RTheme.muted)
-                Text("\(ByteCountFormatter.string(fromByteCount: Int64(z.bytes), countStyle: .file)) · cache \(Int(z.cachedRatio * 100))%" + (z.threats > 0 ? " · \(z.threats) ancaman" : ""))
-                    .font(.system(size: 11.5)).foregroundStyle(z.threats > 0 ? RTheme.amber : RTheme.muted)
-            }
-            .frame(width: 230, alignment: .leading)
-            Chart {
-                ForEach(z.days) { d in
-                    LineMark(x: .value("Hari", String(d.date.suffix(5))), y: .value("Request", d.requests)).foregroundStyle(by: .value("Jenis", "Request")).interpolationMethod(.monotone)
-                    LineMark(x: .value("Hari", String(d.date.suffix(5))), y: .value("Request", d.visitors)).foregroundStyle(by: .value("Jenis", "Pengunjung")).interpolationMethod(.monotone)
-                }
-            }
-            .chartForegroundStyleScale(["Request": RTheme.violet, "Pengunjung": RTheme.mint])
-            .chartLegend(.hidden)
-            .chartYAxis { AxisMarks { v in AxisGridLine().foregroundStyle(RTheme.line); AxisValueLabel { if let i = v.as(Int.self) { Text(i.compact) } } } }
-            .frame(height: 80)
-            VStack(alignment: .leading, spacing: 2) {
-                ForEach(z.countries.prefix(4), id: \.0) { c in
-                    HStack { Text(c.0).font(.system(size: 11)); Spacer(); Text(c.1.compact).font(.system(size: 11, design: .monospaced)) }
-                }
-            }
-            .frame(width: 130)
+    private var analyticsZones: [CFZone] {
+        switch cf.state {
+        case .ok, .loading, .error: return cf.zones
+        case .idle, .noToken, .noPermission: return []
         }
-        .padding(.vertical, 4)
+    }
+
+    private var analyticsReason: String? {
+        switch cf.state {
+        case .noToken: return "Data pengunjung belum tersedia. Hubungkan token Cloudflare Analytics untuk mengisi statistik dan peta."
+        case .noPermission: return "Data pengunjung belum tersedia: token saat ini tidak punya izin Analytics. Peta tetap netral sampai data dapat dibaca."
+        case .idle: return "Data Cloudflare belum dimuat."
+        case .loading: return cf.zones.isEmpty ? "Sedang memuat statistik website dari Cloudflare…" : nil
+        case .error(let message): return cf.zones.isEmpty ? "Data Cloudflare belum tersedia: \(message)" : nil
+        case .ok: return cf.zones.isEmpty ? "Tidak ada zone aktif yang dapat dibaca dengan token ini." : nil
+        }
+    }
+
+    private var analyticsSnapshotNote: String? {
+        guard !cf.zones.isEmpty else { return nil }
+        let date = cf.loadedAt.map { $0.formatted(date: .abbreviated, time: .shortened) } ?? "waktu sebelumnya"
+        switch cf.state {
+        case .loading: return "Data terakhir: \(date) · sedang memperbarui. Angka dan peta masih memakai snapshot sebelumnya."
+        case .error: return "Data terakhir: \(date) · pembaruan gagal. Angka dan peta memakai snapshot sebelumnya."
+        default: return nil
+        }
     }
 
     // MARK: Websites

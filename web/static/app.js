@@ -153,6 +153,7 @@ function render() {
   if (S.route === "files") loadFiles();
   if (S.route === "incidents") loadIncidents();
   if (S.route === "notify") loadNotify();
+  if (S.route === "traffic") loadWorldMap();
 }
 
 // ── Overview ──
@@ -464,6 +465,92 @@ function jobDetail(j) {
 }
 
 // ── Traffic ──
+const cfCount = (v) => Number.isFinite(Number(v)) ? Math.max(0, Number(v)) : 0;
+const cfDays = (z) => (z.days || []).filter((d) => /^\d{4}-\d{2}-\d{2}$/.test(d.date || "")).sort((a, b) => a.date.localeCompare(b.date));
+const cfSum = (z, key) => (z.days || []).reduce((a, d) => a + cfCount(d[key]), 0);
+const cfDate = (d) => /^\d{4}-\d{2}-\d{2}$/.test(d || "") ? new Date(d + "T00:00:00Z").toLocaleDateString("id-ID", { day: "numeric", month: "short", year: "numeric", timeZone: "UTC" }) : "–";
+let cfNames;
+try { cfNames = new Intl.DisplayNames(["id"], { type: "region" }); } catch { /* country codes remain readable */ }
+function cfCountryName(code) {
+  if (code === "UNASSIGNED") return "Asal belum dilaporkan";
+  if (["?", "XX", "ZZ", ""].includes(code)) return "Lokasi tidak diketahui";
+  if (code === "T1") return "Jaringan Tor";
+  const shape = S.worldPaths && S.worldPaths.find((c) => c.code === code);
+  try { if (/^[A-Z]{2}$/.test(code)) return (cfNames && cfNames.of(code)) || (shape && shape.name) || code; } catch { /* unsupported region */ }
+  return (shape && shape.name) || code;
+}
+function cfCountries(z) {
+  const counts = new Map();
+  for (const [raw, value] of z.countries || []) { const c = String(raw || "").trim().toUpperCase(), code = ["", "?", "ZZ"].includes(c) ? "XX" : c; counts.set(code, (counts.get(code) || 0) + cfCount(value)); }
+  const remainder = cfSum(z, "requests") - [...counts.values()].reduce((a, n) => a + n, 0);
+  if (remainder > 0) counts.set("UNASSIGNED", remainder);
+  return [...counts].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]));
+}
+async function loadWorldMap() {
+  if (S.worldPaths || S.worldLoading || S.worldError) return;
+  S.worldLoading = true;
+  try {
+    const r = await fetch("/world-countries.json");
+    if (!r.ok) throw new Error("HTTP " + r.status);
+    const data = await r.json();
+    if (!Array.isArray(data.countries)) throw new Error("Format peta tidak valid");
+    S.worldSource = data.source;
+    S.worldPaths = data.countries.map((country) => ({ code: String(country.code).toUpperCase(), name: country.name,
+      path: (country.rings || []).map((ring) => ring.filter((p) => Array.isArray(p) && Number.isFinite(p[0]) && Number.isFinite(p[1]))
+        .map((p, i) => `${i ? "L" : "M"}${((p[0] + 180) / 360 * 1000).toFixed(1)},${((90 - p[1]) / 180 * 500).toFixed(1)}`).join(" ") + " Z").join(" "),
+    })).filter((c) => (/^[A-Z]{2}$/.test(c.code) || c.code.startsWith("NE-")) && c.path.length > 3);
+  } catch (e) { S.worldError = e.message; }
+  finally { S.worldLoading = false; if (S.route === "traffic") render(); }
+}
+function cfOriginMap(z, available = true) {
+  const countries = available ? cfCountries(z) : [], counts = new Map(countries), selected = available ? S.filters.cfCountry || "" : "", total = available ? cfSum(z, "requests") : 0;
+  const paths = S.worldPaths || [], mapped = new Set(paths.filter((c) => /^[A-Z]{2}$/.test(c.code)).map((c) => c.code)), unmapped = countries.filter(([c]) => !mapped.has(c));
+  const maximum = Math.max(1, ...countries.map(([, n]) => n));
+  let map;
+  if (S.worldError) map = `<div class="cf-map-empty">Peta belum tersedia.${available ? " Semua angka negara tetap dapat dibaca di daftar." : " Data analytics juga belum tersedia."}</div>`;
+  else if (!S.worldPaths) map = `<div class="cf-map-empty">Memuat peta dunia…</div>`;
+  else map = `<svg class="cf-world-map" viewBox="0 0 1000 500" aria-label="${available ? `Peta asal request untuk ${esc(z.name)}` : "Peta dunia · data asal belum tersedia"}">
+    <g aria-label="Negara">${paths.map((c) => { if (!mapped.has(c.code)) return `<path class="cf-map-country neutral" d="${c.path}" fill-rule="evenodd" aria-hidden="true"/>`;
+      const value = counts.get(c.code) || 0, label = `${cfCountryName(c.code)} · ${available ? `${num(value)} request` : "data belum tersedia"}`;
+      return `<path id="cf-map-${esc(c.code)}" class="cf-map-country ${available ? "" : "no-data"} ${value ? "with-data" : ""} ${selected === c.code ? "selected" : ""}" d="${c.path}" fill-rule="evenodd" style="--heat:${0.2 + 0.8 * Math.sqrt(value / maximum)}" data-code="${esc(c.code)}" ${available ? `data-act="cfCountry" data-v="${esc(c.code)}" role="button" tabindex="0" aria-pressed="${selected === c.code}"` : 'role="img"'} aria-label="${esc(label)}"><title>${esc(label)}</title></path>`;
+    }).join("")}</g></svg>`;
+  const value = counts.get(selected) || 0;
+  const detail = !available ? '<span class="muted">Peta akan menampilkan asal request saat data Cloudflare tersedia.</span>' : selected ? `<b>${esc(cfCountryName(selected))}</b><span class="mono">${num(value)} request${total ? ` · ${(value / total * 100).toFixed(1)}% dari seluruh request domain` : ""}</span>${!mapped.has(selected) ? '<span class="small muted">Asal ini tidak dapat ditempatkan pada peta.</span>' : ""}` : '<span class="muted">Pilih negara pada peta atau daftar untuk melihat jumlah request.</span>';
+  return `<div class="cf-origin-grid"><div class="cf-map-panel">
+    <div class="row wrap"><h3>Asal request</h3><span class="spacer"></span><span class="small muted">${available ? `${num(countries.filter(([, n]) => n > 0).length)} asal tercatat` : "Belum ada data"}</span></div>
+    <p class="small muted">${available ? `Negara asal IP request · seluruh domain ${esc(z.name)}` : "Negara asal IP request akan ditampilkan di peta ini."}</p>
+    <div class="cf-map-stage">${map}</div>
+    <div class="cf-map-key small"><span class="cf-key-none"></span>${available ? 'Tanpa request tercatat<span class="cf-key-scale"></span>Lebih banyak request' : "Data asal belum tersedia"}</div>
+    <div id="cf-country-detail" class="cf-country-detail" aria-live="polite">${detail}</div>
+    ${unmapped.length && S.worldPaths ? `<p class="small muted">${num(unmapped.reduce((a, [, n]) => a + n, 0))} request dari ${num(unmapped.length)} asal tidak terpetakan tetap tercantum di daftar.</p>` : ""}
+    <p class="tiny muted">Asal diambil dari geolokasi IP, termasuk bot dan API. Warna menunjukkan request, bukan pengunjung unik.${S.worldSource ? ` Peta: ${esc(S.worldSource.name || "Natural Earth")} · ${esc(S.worldSource.license || "")}.` : ""}</p>
+    </div><div class="cf-country-list"><div class="row"><h3>Semua asal</h3><span class="spacer"></span><span class="small muted">Request</span></div>
+      <div class="cf-country-rows">${countries.map(([c, n]) => `<button id="cf-row-${esc(c)}" class="cf-country-row ${selected === c ? "selected" : ""}" data-act="cfCountry" data-v="${esc(c)}" aria-pressed="${selected === c}"><span class="cf-country-code mono">${c === "UNASSIGNED" ? "–" : esc(c)}</span><span class="cf-country-name">${esc(cfCountryName(c))}${S.worldPaths && !mapped.has(c) ? '<small>Tidak terpetakan</small>' : ""}</span><span class="mono">${num(n)}</span></button>`).join("") || '<div class="cf-map-empty">Belum ada data asal request.</div>'}</div>
+    </div></div>`;
+}
+function cfAnalytics(cf) {
+  // Like the Mac app: a failed refresh keeps the last snapshot (with a note); missing access shows nothing.
+  const stale = (cf.state === "error" || cf.state === "loading") && (cf.zones || []).length > 0;
+  const zones = cf.state === "ok" || stale ? [...(cf.zones || [])].sort((a, b) => cfSum(b, "requests") - cfSum(a, "requests")) : [];
+  const z = zones.find((v) => v.id === S.filters.cfZone) || zones[0] || { name: "Domain belum tersedia", days: [], countries: [], statuses: [] };
+  const days = cfDays(z), latest = days[days.length - 1], available = days.length > 0, period = available ? `7 hari · ${days.length} hari tersedia` : "Belum ada data harian", metric = (key, value, label, note) => `<div class="kpi" data-metric="${key}"><div class="v">${value}</div><div class="l">${label}</div><div class="n">${note}</div></div>`;
+  const status = { noToken: "Hubungkan Cloudflare untuk memuat statistik pengunjung.", noPermission: "Token yang ditemukan belum punya izin Analytics. Angka pengunjung dan asal request belum dapat dimuat.", error: "Cloudflare belum berhasil dimuat.", idle: "Sedang menunggu data Cloudflare…", loading: "Sedang memuat data Cloudflare…" }[cf.state] || (!zones.length ? "Token valid, tetapi belum ada zone aktif." : "Belum ada data harian untuk domain ini. Data Cloudflare dapat terlambat; muat ulang setelah tersedia.");
+  return `<div class="card cf-analytics"><div class="row wrap"><div><h3>Pengunjung & asal traffic</h3><div class="small muted">Statistik seluruh zone Cloudflare, termasuk semua subdomain.</div></div><span class="spacer"></span>
+    <label class="cf-zone-label" for="cf-zone-filter">Domain<select id="cf-zone-filter" ${zones.length ? "" : "disabled"}>${zones.map((v) => `<option value="${esc(v.id)}" ${v.id === z.id ? "selected" : ""}>${esc(v.name)}</option>`).join("") || '<option value="">Belum tersedia</option>'}</select></label></div>
+    <div class="cf-kpis grid g4">
+      ${metric("latest-uniques", latest ? num(latest.visitors) : "–", "IP unik · data harian terbaru", latest ? esc(cfDate(latest.date)) : "Belum ada data harian")}
+      ${metric("daily-uniques", days.length ? num(cfSum(z, "visitors")) : "–", "IP unik · jumlah harian", esc(period))}
+      ${metric("requests", days.length ? num(cfSum(z, "requests")) : "–", "Request", esc(period))}
+      ${metric("pageviews", days.length ? num(cfSum(z, "pageViews")) : "–", "Pageview", esc(period))}
+    </div>
+    <p class="small muted cf-metric-note">IP unik dihitung per hari. IP yang kembali pada hari lain dihitung lagi dalam jumlah harian; angka ini bukan jumlah orang unik selama 7 hari. Traffic dapat mencakup bot. ${latest ? `Data terbaru ${esc(cfDate(latest.date))}.` : ""}</p>
+    ${stale ? `<div class="cf-analytics-status" data-state="stale" role="status">Data terakhir: ${cf.loadedAt ? esc(ago(cf.loadedAt)) : "sebelumnya"} · ${cf.state === "loading" ? "sedang memperbarui" : "pembaruan gagal"}. Angka dan peta memakai snapshot sebelumnya.</div>` : ""}
+    ${available ? "" : `<div class="cf-analytics-status" data-state="${esc(cf.state || "idle")}" role="status">${esc(status)}</div>`}
+    <div class="cf-trends grid g2"><div id="cf-unique-trend"><h3>IP unik per hari</h3>${available ? barsChart(days, "visitors", "var(--green)") : '<div class="cf-trend-placeholder">Belum ada data harian</div>'}</div><div id="cf-request-trend"><h3>Request per hari</h3>${available ? barsChart(days, "requests") : '<div class="cf-trend-placeholder">Belum ada data harian</div>'}</div></div>
+    ${cfOriginMap(z, available)}
+    <div class="cf-analytics-foot"><span>${available ? `Bandwidth ${bytes(cfSum(z, "bytes"))} · cache ${cfSum(z, "requests") ? Math.round(cfSum(z, "cached") / cfSum(z, "requests") * 100) : 0}% · ${num(cfSum(z, "threats"))} ancaman` : "Bandwidth – · cache – · ancaman –"}</span><span>Status edge: ${available ? (z.statuses || []).map(([c, n]) => `${esc(c)}: ${num(n)}`).join(" · ") || "belum ada data" : "–"}</span></div>
+  </div>`;
+}
 function traffic() {
   const st = S.state, cf = st.cloudflare;
   const tunnels = st.nodes.filter((n) => n.detail && n.detail.tunnel).map((n) => {
@@ -478,29 +565,16 @@ function traffic() {
         ${parts.map(([p, c, l]) => `<div class="row small"><span class="dot" style="background:${c}"></span>${l}<span class="spacer"></span><span class="mono">${num(grp(p))} · ${Math.round((grp(p) / tot) * 100)}%</span></div>`).join("")}
         ${t.errors ? `<div class="small amber">${num(t.errors)} request gagal diteruskan ke server</div>` : ""}</div></div></div>`;
   }).join("");
-  let analytics;
-  if (cf.state === "ok") {
-    analytics = cf.zones.map((z) => {
-      const sum = (k) => z.days.reduce((a, d) => a + (d[k] || 0), 0), req = sum("requests");
-      return `<div class="card"><div class="row wrap"><h3>${esc(z.name)}</h3><span class="spacer"></span><span class="small muted">7 hari</span></div>
-        <div class="grid g4" style="margin:12px 0">
-          <div class="kpi"><div class="v">${num(req)}</div><div class="l">Request</div></div>
-          <div class="kpi"><div class="v">${num(sum("visitors"))}</div><div class="l">Pengunjung unik (jumlah harian)</div></div>
-          <div class="kpi"><div class="v">${bytes(sum("bytes"))}</div><div class="l">Bandwidth · cache ${req ? Math.round((sum("cached") / req) * 100) : 0}%</div></div>
-          <div class="kpi"><div class="v ${sum("threats") ? "amber" : ""}">${num(sum("threats"))}</div><div class="l">Ancaman diblokir</div></div></div>
-        ${barsChart(z.days, "requests")}
-        <div class="grid g2" style="margin-top:10px"><div><div class="small muted">Negara teratas</div>${z.countries.map(([c, v]) => `<div class="row small"><span>${esc(c)}</span><span class="spacer"></span><span class="mono">${num(v)}</span></div>`).join("") || '<div class="small muted">–</div>'}</div>
-        <div><div class="small muted">Status di edge</div>${z.statuses.map(([c, v]) => `<div class="row small"><span class="${c[0] === "5" ? "red" : c[0] === "4" ? "amber" : ""}">${esc(c)}</span><span class="spacer"></span><span class="mono">${num(v)}</span></div>`).join("")}</div></div></div>`;
-    }).join("") || `<div class="card empty"><b>Token valid, tapi tidak ada zone aktif</b></div>`;
-  } else {
-    const msg = { noToken: "Belum ada token Cloudflare.", noPermission: "Token Cloudflare yang ditemukan tidak punya izin Analytics.", idle: "Memuat…", error: "Cloudflare menolak permintaan." }[cf.state] || cf.state;
-    analytics = `<div class="card"><h3>Cloudflare Analytics · 7 hari</h3><p><b>${esc(msg)}</b></p>
+  let analytics = cfAnalytics(cf);
+  if (cf.state !== "ok") {
+    const msg = { noToken: "Belum ada token Cloudflare.", noPermission: "Token Cloudflare yang ditemukan tidak punya izin Analytics.", idle: "Memuat…", loading: "Memuat…", error: "Cloudflare menolak permintaan." }[cf.state] || cf.state;
+    analytics += `<div class="card cf-connection-info"><h3>Cloudflare Analytics · 7 hari</h3><p><b>${esc(msg)}</b></p>
       ${(cf.tried || []).map((t) => `<div class="small mono muted">• ${esc(t.source)}: ${esc(t.result)}</div>`).join("")}
       <p class="small muted">Buat token di dash.cloudflare.com → My Profile → API Tokens → template <b>"Read analytics and logs"</b>. Simpan di <span class="mono">~/.hermes/.env</span> di server ini sebagai <span class="mono">CLOUDFLARE_API_TOKEN_FULL=…</span> (lewat Raphael Mac → Knowledge → .env), lalu klik Muat ulang. Token dibaca di server dan tidak pernah dikirim ke browser.</p>
       <button class="btn" data-act="cf">Muat ulang Cloudflare</button></div>`;
   }
-  return head("Traffic", `Cloudflare Tunnel (langsung dari cloudflared) dan Cloudflare Analytics${cf.loadedAt ? ` · dimuat ${ago(cf.loadedAt)}` : ""}`, refreshBtn) +
-    `<div class="stack">${tunnels}${analytics}</div>`;
+  return head("Traffic", `Cloudflare Tunnel (langsung dari cloudflared) dan Cloudflare Analytics${cf.state === "ok" && cf.loadedAt ? ` · dimuat ${ago(cf.loadedAt)}` : ""}`, `${refreshBtn}<button class="btn" data-act="cf">Muat ulang analytics</button>`) +
+    `<div class="stack">${analytics}${tunnels}</div>`;
 }
 
 // ── Agents & Token (Hermes) ──
@@ -828,7 +902,8 @@ document.addEventListener("click", (e) => {
   if (!a) return;
   const v = a.dataset.v, act = a.dataset.act;
   if (act === "refresh") { api("POST", "/api/refresh").then(() => toast("Sampling dimulai…")).catch((x) => toast(x.message, true)); setTimeout(tick, 6000); }
-  else if (act === "cf") { api("POST", "/api/cloudflare").then(() => toast("Memuat Cloudflare…")); setTimeout(tick, 5000); }
+  else if (act === "cf") { api("POST", "/api/cloudflare").then(() => toast("Memuat Cloudflare…")).catch((x) => toast(x.message, true)); setTimeout(tick, 5000); }
+  else if (act === "cfCountry") { S.filters.cfCountry = v; render(); }
   else if (act === "hours") { S.filters.hours = Number(v); render(); }
   else if (act === "toggle") { S.filters[v] = !S.filters[v]; render(); }
   else if (act === "job") { S.filters["job:" + v] = !S.filters["job:" + v]; render(); }
@@ -850,8 +925,12 @@ document.addEventListener("click", (e) => {
   else if (act === "fclose") { S.files.view = null; S.files.file = null; render(); }
 });
 document.addEventListener("toggle", (e) => { const id = e.target.dataset && e.target.dataset.open; if (id) S.filters["open:" + id] = e.target.open; }, true);
+document.addEventListener("keydown", (e) => {
+  if ((e.key === "Enter" || e.key === " ") && e.target.matches(".cf-map-country")) { e.preventDefault(); S.filters.cfCountry = e.target.dataset.v; render(); }
+});
 document.addEventListener("input", (e) => { if (e.target.id === "jobq") { S.filters.jobq = e.target.value; render(); } });
 document.addEventListener("change", (e) => {
+  if (e.target.id === "cf-zone-filter") { S.filters.cfZone = e.target.value; S.filters.cfCountry = ""; render(); }
   if (e.target.id === "pfSel") { S.filters.pf = e.target.value; render(); }
   if (e.target.id === "lcSel") { S.filters.lc = e.target.value; render(); }
   if (e.target.id === "assigneeSel") { S.filters.assignee = e.target.value; render(); }

@@ -13,6 +13,7 @@ import unittest
 import urllib.error
 import urllib.request
 from datetime import datetime, timedelta, timezone
+from unittest.mock import patch
 
 WEB = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, WEB)
@@ -295,8 +296,29 @@ class Http(unittest.TestCase):
             self.assertIn(b'app.js?v=', page)                          # cache-busted assets
         with urllib.request.urlopen(self.base + "/app.js?v=1", timeout=5) as r:
             self.assertIn("javascript", r.headers["Content-Type"])
+        with urllib.request.urlopen(self.base + "/world-countries.json", timeout=5) as r:
+            self.assertIn("application/json", r.headers["Content-Type"])
+            countries = json.load(r)["countries"]
+            self.assertTrue({"ID", "US", "SG"} <= {country["code"] for country in countries})
         with urllib.request.urlopen(self.base + "/../../server.py", timeout=5) as r:     # traversal → index.html
             self.assertIn(b"<title>", r.read())
+
+    def test_cloudflare_state_preserves_full_country_distribution(self):
+        if self.external:
+            self.skipTest("Requires injecting the Python monitor snapshot")
+        country_counts = [[code, count] for count, code in enumerate(["ID", "US", "SG", "JP", "GB", "DE", "AU", "BR", "?", "XX"])]
+        cf = {"state": "ok", "loadedAt": BASE, "zones": [{"id": "zone", "name": "example.test",
+              "days": [{"date": "2026-10-13", "requests": 45, "visitors": 7, "pageViews": 12}],
+              "countries": country_counts, "statuses": [["200", 45]]}], "tried": []}
+        previous = self.app.monitor.cloudflare
+        try:
+            self.app.monitor.cloudflare = cf
+            code, state, headers = self.req("GET", "/api/state", headers={})
+            self.assertEqual(code, 200)
+            self.assertEqual(state["cloudflare"], cf)
+            self.assertIn("connect-src 'self'", headers["Content-Security-Policy"])
+        finally:
+            self.app.monitor.cloudflare = previous
 
     def test_workspace_flow(self):
         code, r, _ = self.req("POST", "/api/project", {"name": "Web Test"})
@@ -348,6 +370,90 @@ class Http(unittest.TestCase):
         with self.assertRaises(urllib.error.HTTPError) as e:
             urllib.request.urlopen(r, timeout=5)
         self.assertEqual(e.exception.code, 400)
+
+
+class Cloudflare(unittest.TestCase):
+    @staticmethod
+    def analytics(groups):
+        return {"data": {"viewer": {"zones": [{"httpRequests1dGroups": groups}]}}}
+
+    @staticmethod
+    def group(date, requests, visitors, page_views, countries, statuses=()):
+        return {"dimensions": {"date": date}, "uniq": {"uniques": visitors}, "sum": {
+            "requests": requests, "pageViews": page_views, "bytes": requests * 100,
+            "cachedRequests": requests // 2, "threats": 1,
+            "countryMap": [{"clientCountryName": code, "requests": count} for code, count in countries],
+            "responseStatusMap": [{"edgeResponseStatus": code, "requests": count} for code, count in statuses]}}
+
+    def test_all_countries_aggregate_across_days_and_zones_keep_request_order(self):
+        # The map needs the full distribution, including unknown origins, not a top-six list.
+        busy = [
+            self.group("2026-10-12", 200, 7, 40,
+                       [("US", 40), ("ID", 30), ("SG", 25), ("JP", 20), ("GB", 15),
+                        ("DE", 10), ("AU", 8), ("BR", 7), (None, 5), ("XX", 4)], [(200, 180), (404, 20)]),
+            self.group("2026-10-13", 300, 5, 60,
+                       [("US", 3), ("ID", 50), ("SG", 2), ("JP", 1), ("GB", 2),
+                        ("DE", 1), ("AU", 1), ("BR", 1), ("", 6), ("XX", 2)], [(200, 280), (500, 20)]),
+        ]
+        quiet = [self.group("2026-10-13", 20, 2, 3, [("CA", 20)], [(200, 20)])]
+        listing = {"result": [{"id": "quiet", "name": "a.example"}, {"id": "busy", "name": "z.example"}]}
+        with patch.object(server, "cf_call", side_effect=[listing, self.analytics(quiet), self.analytics(busy)]) as call:
+            zones = server.cloudflare_zones("test-token")
+        self.assertEqual([z["id"] for z in zones], ["busy", "quiet"])
+        z = zones[0]
+        expected = {"US": 43, "ID": 80, "SG": 27, "JP": 21, "GB": 17,
+                    "DE": 11, "AU": 9, "BR": 8, "?": 11, "XX": 6}
+        self.assertEqual(dict(z["countries"]), expected)
+        self.assertEqual([count for _, count in z["countries"]], sorted(expected.values(), reverse=True))
+        self.assertEqual([d["date"] for d in z["days"]], ["2026-10-12", "2026-10-13"])
+        totals = {key: sum(d[key] for d in z["days"]) for key in ("requests", "visitors", "pageViews", "bytes", "cached", "threats")}
+        self.assertEqual(totals, {"requests": 500, "visitors": 12, "pageViews": 100,
+                                  "bytes": 50000, "cached": 250, "threats": 2})
+        self.assertEqual(z["statuses"], [("200", 460), ("404", 20), ("500", 20)])
+        self.assertEqual(call.call_count, 3)
+        self.assertEqual(call.call_args_list[0].args, ("test-token", "/zones?per_page=50&status=active"))
+        for request in call.call_args_list[1:]:
+            self.assertEqual(request.args[:2], ("test-token", "/graphql"))
+            self.assertIn("countryMap { clientCountryName requests }", request.args[2]["query"])
+
+    def test_empty_analytics_and_missing_optional_metrics(self):
+        listing = {"result": [{"id": "empty", "name": "empty.example"}, {"id": "zero", "name": "zero.example"}]}
+        zero = [{"dimensions": {"date": "2026-10-13"}, "sum": {
+            "countryMap": [{"clientCountryName": "ID", "requests": 0}, {"requests": None}]}}]
+        with patch.object(server, "cf_call", side_effect=[listing, self.analytics([]), self.analytics(zero)]):
+            zones = server.cloudflare_zones("test-token")
+        empty, zero = zones
+        self.assertEqual((empty["days"], empty["countries"], empty["statuses"]), ([], [], []))
+        self.assertEqual(dict(zero["countries"]), {"ID": 0, "?": 0})
+        self.assertEqual(zero["days"], [{"date": "2026-10-13", "requests": 0, "visitors": 0,
+                                       "bytes": 0, "cached": 0, "threats": 0, "pageViews": 0}])
+        self.assertEqual(zero["statuses"], [])
+
+    def test_no_active_zones_does_not_request_analytics(self):
+        with patch.object(server, "cf_call", return_value={"result": []}) as call:
+            self.assertEqual(server.cloudflare_zones("test-token"), [])
+        call.assert_called_once_with("test-token", "/zones?per_page=50&status=active")
+
+
+class WorldMap(unittest.TestCase):
+    def test_country_outlines_do_not_collapse_during_simplification(self):
+        with open(os.path.join(WEB, "static", "world-countries.json"), encoding="utf-8") as f:
+            asset = json.load(f)
+        countries = {country["code"]: country for country in asset["countries"]}
+        self.assertTrue({"ID", "US", "SG", "GB", "DE", "BR", "NG"} <= countries.keys())
+        for country in countries.values():
+            for ring in country["rings"]:
+                self.assertGreaterEqual(len(ring), 4)
+                self.assertEqual(ring[0], ring[-1], country["code"])
+                self.assertTrue(all(-180 <= x <= 180 and -90 <= y <= 90 for x, y in ring))
+        # Broad planar-area bounds from the pinned Natural Earth 50m source catch
+        # a broken simplifier that leaves triangles or slivers instead of land.
+        bounds = {"DE": (40, 50), "US": (1000, 1200), "ID": (140, 170), "BR": (670, 740), "NG": (70, 80), "SG": (.037, .043)}
+        for code, (low, high) in bounds.items():
+            area = sum(abs(sum(a[0] * b[1] - b[0] * a[1] for a, b in zip(ring, ring[1:]))) / 2
+                       for ring in countries[code]["rings"])
+            self.assertGreater(area, low, f"{code}: country outline collapsed")
+            self.assertLess(area, high, f"{code}: country outline distorted")
 
 
 class Env(unittest.TestCase):

@@ -26,7 +26,7 @@ import time
 import traceback
 import urllib.error
 import urllib.request
-from datetime import datetime
+from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse
 
@@ -533,7 +533,7 @@ def cf_call(token: str, path: str, body=None) -> dict:
 
 def cloudflare_zones(token: str) -> list:
     lst = cf_call(token, "/zones?per_page=50&status=active")
-    since = datetime.fromtimestamp(time.time() - 6 * 86400).strftime("%Y-%m-%d")
+    since = datetime.fromtimestamp(time.time() - 6 * 86400, timezone.utc).strftime("%Y-%m-%d")
     out = []
     for z in lst.get("result") or []:
         q = ('{ viewer { zones(filter: {zoneTag: "%s"}) { httpRequests1dGroups(limit: 7, orderBy: [date_ASC], filter: {date_geq: "%s"}) {'
@@ -553,7 +553,7 @@ def cloudflare_zones(token: str) -> list:
                 k = str(c.get("edgeResponseStatus"))
                 statuses[k] = statuses.get(k, 0) + (c.get("requests") or 0)
         out.append({"id": z["id"], "name": z["name"], "days": days,
-                    "countries": sorted(countries.items(), key=lambda kv: -kv[1])[:6], "statuses": sorted(statuses.items())})
+                    "countries": sorted(countries.items(), key=lambda kv: (-kv[1], kv[0])), "statuses": sorted(statuses.items())})
     out.sort(key=lambda z: -sum(d["requests"] for d in z["days"]))
     return out
 
