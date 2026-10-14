@@ -11,7 +11,7 @@ use serde_json::{json, Map, Value};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-pub const ENV_KEYS: [&str; 3] = ["CLARITY_API_TOKEN", "CLARITY_TOKEN", "MS_CLARITY_API_TOKEN"];
+pub const ENV_KEYS: [&str; 4] = ["CLARITY_API_TOKEN", "CLARITY_API_KEY", "CLARITY_TOKEN", "MS_CLARITY_API_TOKEN"];
 pub const DAILY_LIMIT: i64 = 10;
 const CALLS_PER_REFRESH: i64 = 2;
 pub const EVERY: f64 = 6.0 * 3600.0;

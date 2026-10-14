@@ -14,7 +14,7 @@ import urllib.parse
 import urllib.request
 from datetime import datetime, timezone
 
-ENV_KEYS = ["CLARITY_API_TOKEN", "CLARITY_TOKEN", "MS_CLARITY_API_TOKEN"]
+ENV_KEYS = ["CLARITY_API_TOKEN", "CLARITY_API_KEY", "CLARITY_TOKEN", "MS_CLARITY_API_TOKEN"]
 DAILY_LIMIT = 10
 CALLS_PER_REFRESH = 2
 EVERY = 6 * 3600
