@@ -19,11 +19,11 @@ HTTPS_PORT=${2:-8787}
 IMPL=${RAPHAEL_WEB_IMPL:-rust}          # rust (default) or python; both are always copied, the unit picks one
 export PATH=/opt/homebrew/opt/rustup/bin:$HOME/.cargo/bin:$PATH
 
-python3 -m unittest discover -s web/tests 2>&1 | tail -1 | grep -q '^OK' || { echo "✗ tests failed"; python3 -m unittest discover -s web/tests 2>&1 | tail -20; exit 1; }
+python3 -m unittest discover -s web/tests >/dev/null 2>&1 || { echo "✗ tests failed"; python3 -m unittest discover -s web/tests 2>&1 | tail -20; exit 1; }
 echo "✓ python tests"
 if [ "$IMPL" = rust ]; then
-  (cd web/rust && cargo test --release -q 2>&1 | grep -q "test result: ok") || { echo "✗ rust tests failed"; (cd web/rust && cargo test --release 2>&1 | tail -30); exit 1; }
-  (cd web/rust && cargo build --release -q) && (cd web && RAPHAEL_WEB_BIN=$PWD/../target/release/raphael-web python3 -m unittest tests.test_web.Http 2>&1 | tail -1 | grep -q '^OK') \
+  (cd web/rust && cargo test --release -q >/dev/null 2>&1) || { echo "✗ rust tests failed"; (cd web/rust && cargo test --release 2>&1 | tail -30); exit 1; }
+  (cd web/rust && cargo build --release -q) && (cd web && RAPHAEL_WEB_BIN=$PWD/../target/release/raphael-web python3 -m unittest tests.test_web.Http >/dev/null 2>&1) \
     || { echo "✗ HTTP contract tests failed against the Rust server"; exit 1; }
   echo "✓ rust tests + HTTP contract"
   (cd web/rust && cargo zigbuild --release -q --target aarch64-unknown-linux-gnu.2.36) || { echo "✗ cross-compile failed"; exit 1; }
