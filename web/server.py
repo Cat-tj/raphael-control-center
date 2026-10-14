@@ -578,6 +578,21 @@ class App:
         from operations import Operations
         self.ops = Operations(self.monitor, self.metrics, self.ws, cfg)
         self.monitor.ops = self.ops
+        from clarity import Clarity
+        self.clarity = Clarity(self.metrics)
+
+    def start_clarity(self):
+        import clarity
+
+        def loop():
+            time.sleep(30)
+            while True:
+                try:
+                    self.clarity.refresh(self.monitor.env_values(clarity.ENV_KEYS))
+                except Exception:  # noqa: BLE001
+                    log("clarity", traceback.format_exc())
+                time.sleep(600)
+        threading.Thread(target=loop, daemon=True).start()
         self.monitor.ws_rev_fn = lambda: self.ws_rev
 
 
@@ -664,6 +679,8 @@ def make_handler(app: App):
                                             "profile": sel and sel["id"], "snapshot": snap})
                 if u.path == "/api/omniroute":
                     return self._json(200, app.monitor.omniroute)
+                if u.path == "/api/clarity":
+                    return self._json(200, app.clarity.view())
                 if u.path in ("/api/files", "/api/file"):
                     node = next((n for n in app.cfg["nodes"] if n["id"] == q.get("node")), None)
                     if not node:
@@ -745,6 +762,13 @@ def make_handler(app: App):
                     except ValueError as e:
                         raise WorkspaceError(str(e))
                     return self._json(200, r)
+                if parts[:2] == ["api", "clarity"] and method == "POST":
+                    import clarity
+                    why = clarity.refusal(app.clarity.state, time.time())
+                    if why:
+                        return self._json(429, {"error": why})
+                    threading.Thread(target=app.clarity.refresh, args=(app.monitor.env_values(clarity.ENV_KEYS), True), daemon=True).start()
+                    return self._json(202, {"ok": True})
                 if parts[:2] == ["api", "omniroute"] and method == "POST":
                     threading.Thread(target=app.monitor.refresh_omniroute, daemon=True).start()
                     return self._json(202, {"ok": True})
@@ -797,6 +821,7 @@ def main():
     if not args.no_sampling:
         app.monitor.start()
         app.ops.start()
+        app.start_clarity()
     srv = ThreadingHTTPServer(("127.0.0.1", int(cfg["port"])), make_handler(app))
     srv.daemon_threads = True
     log(f"Raphael Web {VERSION} on http://127.0.0.1:{cfg['port']} · {len(cfg['nodes'])} device · data {cfg['data']}")

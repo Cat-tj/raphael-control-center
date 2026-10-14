@@ -2,7 +2,7 @@
 //! Linux box and the desktop app (Tauri) both start it with `start`.
 
 use crate::core::{now, s};
-use crate::{files, hermes, metrics, monitor, operations, workspace};
+use crate::{clarity, files, hermes, metrics, monitor, operations, workspace};
 use crate::util::log;
 use serde_json::{json, Value};
 use std::io::Read;
@@ -22,6 +22,7 @@ pub struct App {
     ws_rev: Arc<AtomicI64>,
     statics: Static,
     last_refresh: Mutex<f64>,
+    clarity: Arc<clarity::Clarity>,
 }
 
 pub fn load_config(path: &str) -> Value {
@@ -62,7 +63,8 @@ impl App {
         }
         let mon = Arc::new(monitor::Monitor::new(cfg.clone(), metrics.clone(), COLLECTOR.to_string()));
         let ops = Arc::new(operations::Operations::new(mon.clone(), metrics.clone(), ws.clone(), cfg.clone()));
-        App { cfg, metrics, ws, mon, ops, ws_rev, statics, last_refresh: Mutex::new(0.0) }
+        let clarity = Arc::new(clarity::Clarity::new(metrics.clone()));
+        App { cfg, metrics, ws, mon, ops, ws_rev, statics, last_refresh: Mutex::new(0.0), clarity }
     }
 
     fn start(self: &Arc<Self>) {
@@ -84,6 +86,10 @@ impl App {
         loop_(600.0, 5, Box::new(move || m.refresh_cloudflare()));
         let m = self.mon.clone();
         loop_(120.0, 8, Box::new(move || m.refresh_omniroute()));
+        let (m, c) = (self.mon.clone(), self.clarity.clone());
+        loop_(600.0, 30, Box::new(move || {
+            let _ = c.refresh(m.env_values(&clarity::ENV_KEYS, None), false);
+        }));
         self.ops.start();
     }
 
@@ -287,6 +293,7 @@ fn handle(app: Arc<App>, mut req: Request) {
                 json!({"profiles": profs.iter().map(|p| json!({"id": p["id"], "name": p["name"]})).collect::<Vec<_>>(), "profile": sel.map(|p| p["id"].clone()), "snapshot": snap})
             }
             "/api/omniroute" => app.mon.omniroute.lock().unwrap().clone(),
+            "/api/clarity" => app.clarity.view(),
             "/api/files" | "/api/file" => {
                 let nodes = app.cfg["nodes"].as_array().cloned().unwrap_or_default();
                 let Some(node) = nodes.iter().find(|n| q.get("node").map(|w| w == s(n, "id")).unwrap_or(false)) else {
@@ -355,6 +362,17 @@ fn handle(app: Arc<App>, mut req: Request) {
             (Method::Post, ["api", "cloudflare"]) => {
                 let m = app.mon.clone();
                 std::thread::spawn(move || m.refresh_cloudflare());
+                Ok((202, json!({"ok": true})))
+            }
+            (Method::Post, ["api", "clarity"]) => {
+                let st = app.clarity.state.lock().unwrap().clone();
+                if let Some(why) = clarity::Clarity::refusal(&st, now()) {
+                    return Ok((429, json!({"error": why})));
+                }
+                let (m, c) = (app.mon.clone(), app.clarity.clone());
+                std::thread::spawn(move || {
+                    let _ = c.refresh(m.env_values(&clarity::ENV_KEYS, None), true);
+                });
                 Ok((202, json!({"ok": true})))
             }
             (Method::Post, ["api", "omniroute"]) => {

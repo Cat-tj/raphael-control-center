@@ -371,6 +371,84 @@ class Http(unittest.TestCase):
             urllib.request.urlopen(r, timeout=5)
         self.assertEqual(e.exception.code, 400)
 
+    def test_clarity_without_token_spends_no_calls(self):
+        code, c, _ = self.req("GET", "/api/clarity", headers={})
+        self.assertEqual(code, 200)
+        self.assertEqual((c["limit"], c["used"]), (10, 0))
+        self.assertNotIn("quota", c)
+        code, _, _ = self.req("POST", "/api/clarity", {})
+        self.assertEqual(code, 202)
+        for _ in range(50):
+            c = self.req("GET", "/api/clarity", headers={})[1]
+            if c["state"] == "noToken":
+                break
+            time.sleep(0.05)
+        self.assertEqual((c["state"], c["used"]), ("noToken", 0))
+
+
+class Clarity(unittest.TestCase):
+    """Same cases as rust/src/clarity.rs."""
+    SAMPLE = [
+        {"metricName": "Traffic", "information": [{"totalSessionCount": "120", "totalBotSessionCount": "30", "distantUserCount": "95", "PagesPerSessionPercentage": 1.8}]},
+        {"metricName": "Scroll Depth", "information": [{"averageScrollDepth": 42.5}]},
+        {"metricName": "Engagement Time", "information": [{"totalTime": "180", "activeTime": "64"}]},
+        {"metricName": "DeadClickCount", "information": [{"sessionsCount": "9", "sessionsWithMetricPercentage": 7.5}]},
+        {"metricName": "QuickbackClick", "information": [{"sessionsCount": "14", "sessionsWithMetricPercentage": 11.7}]},
+        {"metricName": "Device", "information": [{"name": "Mobile", "sessionsCount": "80"}, {"name": "PC", "sessionsCount": "40"}]},
+        {"metricName": "Unknown thing", "information": [{"x": 1}]},
+    ]
+
+    def test_totals_and_lists_tolerate_field_names(self):
+        import clarity
+        t, l = clarity.summarize(self.SAMPLE)
+        self.assertEqual((t["sessions"], t["bots"], t["users"], t["scrollDepth"], t["activeTime"]), (120, 30, 95, 42.5, 64))
+        self.assertEqual(t["deadClicks"], {"sessions": 9, "pct": 7.5})
+        self.assertEqual(t["quickbacks"]["pct"], 11.7)
+        self.assertEqual(l["devices"], [{"name": "Mobile", "sessions": 80}, {"name": "PC", "sessions": 40}])
+        self.assertEqual(clarity.summarize({"not": "a list"}), ({}, {}))
+
+    def test_pages_merge_metrics_per_url_and_give_the_site(self):
+        import clarity
+        p = clarity.pages([
+            {"metricName": "Traffic", "information": [
+                {"totalSessionCount": "10", "distinctUserCount": "8", "Url": "https://example.test/contact"},
+                {"totalSessionCount": "50", "distinctUserCount": "41", "Url": "https://example.test/"}]},
+            {"metricName": "ScrollDepth", "information": [{"averageScrollDepth": 31.0, "Url": "https://example.test/contact"}]},
+            {"metricName": "RageClickCount", "information": [{"sessionsCount": "2", "Url": "https://example.test/contact"}]},
+        ])
+        self.assertEqual(p[0]["url"], "https://example.test/")
+        self.assertEqual((p[1]["scrollDepth"], p[1]["rageClicks"]), (31.0, 2))
+        self.assertEqual(clarity.site_of(p), "example.test")
+
+    def test_schedule_respects_the_daily_limit(self):
+        import clarity
+        t = 1_000_000.0
+        self.assertTrue(clarity.due({"state": "idle"}, t))
+        self.assertFalse(clarity.due({"state": "ok", "lastTry": t - 3600}, t))
+        self.assertTrue(clarity.due({"state": "ok", "lastTry": t - clarity.EVERY}, t))
+        self.assertFalse(clarity.due({"state": "error", "lastTry": t - 600}, t))
+        self.assertFalse(clarity.due({"state": "ok", "lastTry": 0, "quota": {"date": clarity.today(), "used": 9}}, t))
+        self.assertEqual(clarity.used({"quota": {"date": "2000-01-01", "used": 10}}), 0)
+        self.assertIsNotNone(clarity.refusal({"state": "ok", "lastTry": t - 60}, t))
+        self.assertIsNone(clarity.refusal({"state": "ok", "lastTry": t - clarity.MANUAL_GAP}, t))
+
+    def test_refresh_records_history_and_quota(self):
+        import clarity
+        from unittest.mock import patch
+        d = tempfile.mkdtemp()
+        c = clarity.Clarity(server.Metrics(os.path.join(d, "m.sqlite")))
+        with patch.object(clarity, "fetch", side_effect=[self.SAMPLE, []]):
+            self.assertIsNone(c.refresh([("test", "tok")]))
+        v = c.view()
+        self.assertEqual((v["state"], v["used"], v["totals"]["sessions"]), ("ok", 2, 120))
+        self.assertEqual([h["date"] for h in v["history"]], [clarity.today()])
+        self.assertIsNotNone(c.refresh([("test", "tok")], manual=True))   # inside the 15-minute gap
+        with patch.object(clarity, "fetch", side_effect=clarity.Denied("x")):
+            c.state["lastTry"] = 0
+            c.refresh([("test", "tok")], manual=True)
+        self.assertEqual((c.view()["state"], c.view()["used"]), ("denied", 3))
+        self.assertEqual(c.view()["totals"]["sessions"], 120)               # last good numbers stay
+
 
 class Cloudflare(unittest.TestCase):
     @staticmethod

@@ -153,7 +153,7 @@ function render() {
   if (S.route === "files") loadFiles();
   if (S.route === "incidents") loadIncidents();
   if (S.route === "notify") loadNotify();
-  if (S.route === "traffic") loadWorldMap();
+  if (S.route === "traffic") { loadWorldMap(); loadClarity(); }
 }
 
 // ── Overview ──
@@ -465,6 +465,49 @@ function jobDetail(j) {
 }
 
 // ── Traffic ──
+// ── Clarity (visitor behaviour; fetched by the server, 10 calls/day) ──
+async function loadClarity(force) {
+  if (S.clarityLoading || (!force && S.clarity && Date.now() - S.clarityAt < 60000)) return;
+  S.clarityLoading = true;
+  try { S.clarity = await api("GET", "/api/clarity"); S.clarityAt = Date.now(); } catch (e) { S.clarity = { state: "error", error: e.message }; }
+  finally { S.clarityLoading = false; if (S.route === "traffic") render(); }
+}
+const clDur = (sec) => sec == null ? "–" : sec >= 60 ? `${Math.floor(sec / 60)} mnt ${Math.round(sec % 60)} dtk` : `${Math.round(sec)} dtk`;
+const clPct = (v) => v == null ? "–" : `${Number(v).toFixed(v < 10 ? 1 : 0)}%`;
+const clPath = (u) => { try { const x = new URL(u); return x.pathname + x.search || "/"; } catch { return u || "–"; } };
+function clarityCard() {
+  const c = S.clarity;
+  if (!c) return `<div class="card"><h3>Perilaku pengunjung · Clarity</h3><p class="small muted">Memuat…</p></div>`;
+  const quota = `${num(c.used || 0)}/${num(c.limit || 10)} permintaan hari ini`;
+  const btn = `<button class="btn" data-act="clarity">Muat ulang Clarity</button>`;
+  const hdr = (sub) => `<div class="row wrap"><div><h3>Perilaku pengunjung · Clarity${c.site ? ` · ${esc(c.site)}` : ""}</h3><div class="small muted">${sub}</div></div><span class="spacer"></span>${btn}<a class="btn" href="https://clarity.microsoft.com/projects" target="_blank" rel="noopener">Buka Clarity ↗</a></div>`;
+  if (c.state === "noToken" || c.state === "idle" && !c.totals) {
+    return `<div class="card">${hdr("Heatmap, rekaman sesi, lama kunjungan dan klik kontak dari Microsoft Clarity")}
+      <p><b>${c.state === "noToken" ? "Belum ada token Clarity." : "Menunggu pemuatan pertama…"}</b></p>
+      <p class="small muted">Di clarity.microsoft.com → project → <b>Settings → Data Export → Generate new API token</b>. Simpan di <span class="mono">~/.hermes/.env</span> di server ini sebagai <span class="mono">CLARITY_API_TOKEN=…</span> (lewat Raphael Mac → Knowledge → .env), lalu klik Muat ulang. Token dibaca di server dan tidak pernah dikirim ke browser. Clarity hanya mengizinkan 10 permintaan per hari, jadi Raphael memuat tiap ${num(c.everyHours || 6)} jam.</p></div>`;
+  }
+  const t = c.totals || {}, problem = c.state !== "ok" ? `<div class="cf-analytics-status" role="status">${esc(c.error || c.state)}${c.at ? ` · angka di bawah dari ${esc(ago(c.at))}` : ""}</div>` : "";
+  const tried = c.state !== "ok" ? (c.tried || []).map((x) => `<div class="small mono muted">• ${esc(x.source)}: ${esc(x.result)}</div>`).join("") : "";
+  const kpi = (v, l, n) => `<div class="kpi"><div class="v">${v}</div><div class="l">${l}</div>${n ? `<div class="n small muted">${n}</div>` : ""}</div>`;
+  const issue = (k, l, tip) => { const x = t[k] || {}; return x.sessions == null && x.pct == null ? "" : `<span class="chip" title="${esc(tip)}">${l} · ${num(x.sessions)} sesi${x.pct != null ? ` (${clPct(x.pct)})` : ""}</span>`; };
+  const pages = (c.pages || []).slice(0, 15).map((p) => `<tr><td class="ellipsis" style="max-width:320px" title="${esc(p.url)}">${esc(clPath(p.url))}</td><td class="mono">${num(p.sessions)}</td><td class="mono">${clPct(p.scrollDepth)}</td><td class="mono">${clDur(p.activeTime)}</td><td class="mono">${num(p.deadClicks)}</td><td class="mono">${num(p.rageClicks)}</td><td class="mono">${num(p.quickbacks)}</td></tr>`).join("");
+  const list = (k, title) => { const l = (c.lists || {})[k] || []; return l.length ? `<div><div class="small muted">${title}</div>${l.slice(0, 6).map((x) => `<div class="row small"><span class="ellipsis">${esc(x.name)}</span><span class="spacer"></span><span class="mono">${num(x.sessions)}</span></div>`).join("")}</div>` : ""; };
+  const lists = ["devices", "referrers", "countries", "browsers"].map((k, i) => list(k, ["Perangkat", "Datang dari", "Negara", "Browser"][i])).filter(Boolean).join("");
+  const hist = (c.history || []).filter((h) => h.sessions != null);
+  return `<div class="card">${hdr(`24 jam terakhir${c.at ? ` · dimuat ${esc(ago(c.at))}` : ""} · ${quota}`)}${problem}${tried}
+    <div class="grid g4" style="margin:14px 0">
+      ${kpi(num(t.sessions), "Sesi", t.bots != null ? `${num(t.bots)} sesi bot` : "")}
+      ${kpi(num(t.users), "Pengguna unik", t.pagesPerSession != null ? `${Number(t.pagesPerSession).toFixed(1)} halaman / sesi` : "")}
+      ${kpi(clPct(t.scrollDepth), "Scroll rata-rata", "seberapa jauh halaman dibaca")}
+      ${kpi(clDur(t.activeTime), "Waktu aktif", t.totalTime != null ? `total ${clDur(t.totalTime)}` : "")}
+    </div>
+    <div class="row wrap" style="gap:6px">${issue("deadClicks", "Dead click", "Klik pada sesuatu yang tidak bisa diklik")}${issue("rageClicks", "Rage click", "Klik berulang karena frustrasi")}${issue("quickbacks", "Quick back", "Langsung kembali setelah membuka halaman")}${issue("excessiveScroll", "Scroll berlebihan", "Scroll naik-turun mencari sesuatu")}${issue("scriptErrors", "Error script", "Error JavaScript di halaman")}${issue("errorClicks", "Klik error", "Klik yang memicu error")}</div>
+    ${hist.length > 1 ? `<h3 style="margin-top:16px;font-size:12px">Sesi per hari (riwayat Raphael)</h3>${barsChart(hist, "sessions")}` : ""}
+    ${pages ? `<div class="scroll-x" style="margin-top:14px"><table class="tbl"><tr><th>Halaman</th><th>Sesi</th><th>Scroll</th><th>Aktif</th><th>Dead</th><th>Rage</th><th>Quick back</th></tr>${pages}</table></div>` : ""}
+    ${lists ? `<div class="grid g4" style="margin-top:14px">${lists}</div>` : ""}
+    <p class="small muted" style="margin-top:12px">Klik kontak (WhatsApp, email, telepon, form) tidak ikut diekspor Clarity. Lihat di Clarity → <b>Recordings</b> atau <b>Dashboard</b> → filter <b>Custom events</b>: <span class="mono">kontak_whatsapp</span>, <span class="mono">kontak_email</span>, <span class="mono">kontak_telepon</span>, <span class="mono">buka_halaman_kontak</span>, <span class="mono">kirim_form</span>.</p>
+  </div>`;
+}
 const cfCount = (v) => Number.isFinite(Number(v)) ? Math.max(0, Number(v)) : 0;
 const cfDays = (z) => (z.days || []).filter((d) => /^\d{4}-\d{2}-\d{2}$/.test(d.date || "")).sort((a, b) => a.date.localeCompare(b.date));
 const cfSum = (z, key) => (z.days || []).reduce((a, d) => a + cfCount(d[key]), 0);
@@ -574,7 +617,7 @@ function traffic() {
       <button class="btn" data-act="cf">Muat ulang Cloudflare</button></div>`;
   }
   return head("Traffic", `Cloudflare Tunnel (langsung dari cloudflared) dan Cloudflare Analytics${cf.state === "ok" && cf.loadedAt ? ` · dimuat ${ago(cf.loadedAt)}` : ""}`, `${refreshBtn}<button class="btn" data-act="cf">Muat ulang analytics</button>`) +
-    `<div class="stack">${analytics}${tunnels}</div>`;
+    `<div class="stack">${clarityCard()}${analytics}${tunnels}</div>`;
 }
 
 // ── Agents & Token (Hermes) ──
@@ -903,6 +946,7 @@ document.addEventListener("click", (e) => {
   const v = a.dataset.v, act = a.dataset.act;
   if (act === "refresh") { api("POST", "/api/refresh").then(() => toast("Sampling dimulai…")).catch((x) => toast(x.message, true)); setTimeout(tick, 6000); }
   else if (act === "cf") { api("POST", "/api/cloudflare").then(() => toast("Memuat Cloudflare…")).catch((x) => toast(x.message, true)); setTimeout(tick, 5000); }
+  else if (act === "clarity") { api("POST", "/api/clarity").then(() => { toast("Memuat Clarity…"); setTimeout(() => loadClarity(true), 8000); }).catch((x) => toast(x.message, true)); }
   else if (act === "cfCountry") { S.filters.cfCountry = v; render(); }
   else if (act === "hours") { S.filters.hours = Number(v); render(); }
   else if (act === "toggle") { S.filters[v] = !S.filters[v]; render(); }

@@ -363,6 +363,7 @@ struct MonitorPage: View {
 
     private var trafficTab: some View {
         VStack(alignment: .leading, spacing: 16) {
+            if device.isAll { ClarityCard() }
             trafficCard
             if device.isAll { websitesCard }
         }

@@ -2,6 +2,7 @@
 //! for an always-on Linux box and as a library embedded in the desktop app.
 
 pub mod assets;
+pub mod clarity;
 pub mod core;
 pub mod cron;
 pub mod files;
