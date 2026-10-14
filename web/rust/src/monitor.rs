@@ -285,7 +285,7 @@ impl Monitor {
                     state = "ok";
                     break;
                 }
-                Err(net::CfError::Permission(_)) => tried.push(json!({"source": source, "result": "tidak punya izin Analytics / Zone Read"})),
+                Err(net::CfError::Permission(m)) => tried.push(json!({"source": source, "result": format!("tidak punya izin Analytics / Zone Read · Cloudflare: {}", m.chars().take(120).collect::<String>())})),
                 Err(net::CfError::Other(e)) => {
                     tried.push(json!({"source": source, "result": e.chars().take(160).collect::<String>()}));
                     state = "error";

@@ -354,8 +354,8 @@ class Monitor:
                 tried.append({"source": source, "result": f"OK · {len(zones)} zone"})
                 state = "ok"
                 break
-            except PermissionError:
-                tried.append({"source": source, "result": "tidak punya izin Analytics / Zone Read"})
+            except PermissionError as e:
+                tried.append({"source": source, "result": f"tidak punya izin Analytics / Zone Read · Cloudflare: {str(e)[:120]}"})
             except Exception as e:  # noqa: BLE001
                 tried.append({"source": source, "result": str(e)[:160]})
                 state = "error"
