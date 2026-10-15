@@ -317,6 +317,7 @@ Object.assign(ICON, {
   search: '<circle cx="11" cy="11" r="6.5"/><path d="m20 20-4.2-4.2"/>',
   plus: '<path d="M12 5v14M5 12h14"/>',
   sync: '<path d="M4.5 12a7.5 7.5 0 0 1 12.8-5.3L19.5 9"/><path d="M19.5 4.5V9H15"/><path d="M19.5 12a7.5 7.5 0 0 1-12.8 5.3L4.5 15"/><path d="M4.5 19.5V15H9"/>',
+  file: '<path d="M7 3.5h7l4 4V20a.5.5 0 0 1-.5.5h-10A.5.5 0 0 1 7 20Z"/><path d="M14 3.5V8h4"/>',
   cloud: '<path d="M7 18.5a4.5 4.5 0 0 1-.6-9 6 6 0 0 1 11.4 1.6A3.8 3.8 0 0 1 17.3 18.5Z"/><path d="m9.5 13.5 2 2 3.5-3.5"/>',
 });
 function emptyState(ic, title, msg, primary, secondary) {
@@ -1049,28 +1050,32 @@ async function loadFiles() {
 }
 function filesPage() {
   const f = S.files || { node: S.state.nodes[0] && S.state.nodes[0].id, path: "~" };
+  const node = S.state.nodes.find((n) => n.id === f.node) || {};
   const nodeSel = `<select id="fileNode">${S.state.nodes.map((n) => `<option value="${esc(n.id)}" ${n.id === f.node ? "selected" : ""}>${esc(n.name)}</option>`).join("")}</select>`;
-  const quick = ["~", "/etc", "/var/log", "/srv", "/opt", "~/.hermes"].map((p) => `<button class="btn sm" data-act="fgo" data-v="${esc(p)}">${esc(p)}</button>`).join("");
-  const l = f.list;
-  let list = '<div class="muted">Memuat…</div>';
-  if (l && l.error) list = `<div class="red small">${esc(l.error)}</div>`;
-  else if (l && l.items) {
-    const up = l.path !== "/" ? `<div class="item click" data-act="fgo" data-v="${esc(l.parent)}"><span class="ico">↰</span><b>..</b></div>` : "";
-    list = up + l.items.map((it) => {
-      const full = (l.path.endsWith("/") ? l.path : l.path + "/") + it.name;
-      if (it.secret) return `<div class="item"><span>🔒</span><span class="ellipsis muted" style="flex:1">${esc(it.name)}</span><span class="tiny muted">disembunyikan</span></div>`;
-      return `<div class="item click" data-act="${it.dir ? "fgo" : "fview"}" data-v="${esc(full)}"><span>${it.dir ? "▸" : "·"}</span><span class="ellipsis" style="flex:1">${esc(it.name)}${it.link ? ' <span class="tiny muted">↪</span>' : ""}</span>
-        <span class="tiny muted hide-sm">${it.dir ? "" : bytes(it.size)}</span><span class="tiny muted">${ago(it.mtime)}</span></div>`;
-    }).join("");
-  }
+  const places = ["~", "~/.hermes", "/etc", "/var/log", "/srv", "/opt", "/"];
+  const l = f.list, q = (f.filter || "").toLowerCase();
+  const items = l && l.items ? l.items.filter((it) => (f.hidden || !it.name.startsWith(".")) && (!q || it.name.toLowerCase().includes(q))) : [];
+  const fileIcon = (it) => it.secret ? "🔒" : it.dir ? icon("folder") : icon("file");
+  let rows = '<div class="fempty"><div class="spinner"></div></div>';
+  if (l && l.error) rows = `<div class="red small" style="padding:14px">${esc(l.error)}</div>`;
+  else if (l && l.items) rows = items.map((it) => { const full = (l.path.endsWith("/") ? l.path : l.path + "/") + it.name;
+    return `<div class="frow ${it.secret ? "" : "click"} ${f.view === full ? "on" : ""}" ${it.secret ? "" : `data-act="${it.dir ? "fgo" : "fview"}" data-v="${esc(full)}"`}>
+      <span class="fname"><span class="fico ${it.dir ? "dir" : ""}">${fileIcon(it)}</span><span class="ellipsis">${esc(it.name)}${it.link ? ' <span class="tiny muted">↪</span>' : ""}</span></span>
+      <span class="tiny muted">${it.secret ? "disembunyikan" : it.dir ? "–" : bytes(it.size)}</span><span class="tiny muted">${ago(it.mtime)}</span></div>`; }).join("") || '<div class="small muted" style="padding:14px">Folder kosong.</div>';
   const v = f.file;
-  const viewer = !f.view ? "" : !v ? '<div class="muted">Memuat…</div>' : v.error ? `<div class="red small">${esc(v.error)}</div>`
-    : v.binary ? `<div class="muted small">File biner (${bytes(v.size)}) — tidak ditampilkan.</div>`
-    : `${v.truncated ? `<div class="amber small">Hanya 512 KB pertama dari ${bytes(v.size)}.</div>` : ""}<pre class="mono viewer">${esc(v.text)}</pre>`;
-  return head("File", "Hanya baca, sebagai user biasa. File yang biasanya berisi rahasia (.env, key, token) tidak ditampilkan.", nodeSel) +
-    `<div class="row wrap" style="margin-bottom:12px">${quick}</div>
-    <div class="grid ${f.view ? "g2" : ""}"><div class="card"><div class="small mono muted ellipsis" style="margin-bottom:8px">${esc(l && l.path || f.path)}</div><div class="list files">${list}</div></div>
-    ${f.view ? `<div class="card"><div class="row"><b class="mono small ellipsis" style="flex:1">${esc(f.view)}</b><button class="btn sm" data-act="fclose">Tutup</button></div>${viewer}</div>` : ""}</div>`;
+  const viewer = !f.view ? `<div class="fempty">${emptyState("search", "Pilih file untuk melihat isinya", "Hanya baca, sebagai user biasa. File yang biasanya berisi rahasia (.env, key, token) tidak ditampilkan.")}</div>`
+    : !v ? '<div class="fempty"><div class="spinner"></div></div>' : v.error ? `<div class="red small" style="padding:14px">${esc(v.error)}</div>`
+    : v.binary ? `<div class="muted small" style="padding:14px">File biner (${bytes(v.size)}), tidak ditampilkan.</div>`
+    : `<div class="row fhead"><b class="mono small ellipsis" style="flex:1">${esc(f.view)}</b><span class="tiny muted">${bytes(v.size)}</span><button class="btn sm" data-act="fclose">Tutup</button></div>${v.truncated ? `<div class="amber small" style="padding:0 14px">Hanya 512 KB pertama dari ${bytes(v.size)}.</div>` : ""}<pre class="mono viewer">${esc(v.text)}</pre>`;
+  const tools = `<div class="row wrap ftools"><button class="btn icon-btn" data-act="fgo" data-v="${esc(l && l.parent || "/")}" title="Naik satu folder">↑</button>
+    <select id="fplace" title="Lokasi"><option value="">Lokasi</option>${places.map((p) => `<option value="${esc(p)}">${esc(p)}</option>`).join("")}</select>
+    <input type="text" id="fpath" value="${esc(l && l.path || f.path)}" placeholder="Path" style="flex:1;min-width:180px" class="mono">
+    <input type="search" id="ffilter" value="${esc(f.filter || "")}" placeholder="Filter" style="width:180px">
+    <label class="check"><input type="checkbox" data-act="fhidden" ${f.hidden ? "checked" : ""}> Tersembunyi</label>
+    <button class="btn icon-btn" data-act="frefresh" title="Muat ulang">↻</button></div>`;
+  return head("File", `Jelajahi dan baca file di ${esc(node.name || "server")}`, nodeSel) + tools +
+    `<div class="fsplit"><div class="card fpane"><div class="frow fth"><span>Nama</span><span>Ukuran</span><span>Diubah</span></div><div class="fbody">${rows}</div><div class="ffoot tiny muted">${l && l.items ? `${items.length} item` : ""}</div></div>
+      <div class="card fpane">${viewer}</div></div>`;
 }
 
 // ── Workspace: portfolio ──
@@ -1265,17 +1270,22 @@ document.addEventListener("click", (e) => {
   else if (act === "fgo") { S.files.path = v; S.files.view = null; S.files.file = null; render(); }
   else if (act === "fview") { S.files.view = v; S.files.file = null; render(); }
   else if (act === "fclose") { S.files.view = null; S.files.file = null; render(); }
+  else if (act === "frefresh") { S.files.loaded = ""; render(); }
 });
 document.addEventListener("toggle", (e) => { const id = e.target.dataset && e.target.dataset.open; if (id) S.filters["open:" + id] = e.target.open; }, true);
 document.addEventListener("keydown", (e) => {
+  if (e.key === "Enter" && e.target.id === "fpath") { S.files.path = e.target.value.trim() || "~"; S.files.view = null; S.files.file = null; render(); }
   if ((e.key === "Enter" || e.key === " ") && e.target.matches(".cf-map-country")) { e.preventDefault(); S.filters.cfCountry = e.target.dataset.v; render(); }
 });
 document.addEventListener("input", (e) => {
   if (e.target.id === "jobq") { S.filters.jobq = e.target.value; render(); }
+  if (e.target.id === "ffilter") { S.files.filter = e.target.value; render(); }
   if (e.target.id === "pq" || e.target.id === "prq") { S.filters[e.target.id] = e.target.value; render(); }
   if (e.target.id === "meName") { try { localStorage.setItem("raphaelMe", e.target.value.trim() || "Saya"); } catch { /* ignore */ } render(); }
 });
 document.addEventListener("change", (e) => {
+  if (e.target.dataset.act === "fhidden") { S.files.hidden = e.target.checked; render(); }
+  if (e.target.id === "fplace" && e.target.value) { S.files.path = e.target.value; S.files.view = null; S.files.file = null; render(); }
   if (e.target.dataset.act === "pfav") { S.filters.pfav = e.target.checked; render(); }
   if (e.target.dataset.act === "ppaused") { S.filters.ppaused = e.target.checked; render(); }
   if (e.target.dataset.act === "unassigned") { S.filters.unassigned = e.target.checked; render(); }
