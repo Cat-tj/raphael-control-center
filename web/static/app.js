@@ -10,12 +10,30 @@ const STATUSES = [["backlog", "Backlog"], ["ready", "Ready"], ["in_progress", "I
 const LIFECYCLES = [["idea", "Idea"], ["planned", "Planned"], ["building", "Building"], ["live", "Live"], ["maintenance", "Maintenance"], ["archived", "Archived"]];
 const PRIO = ["Tanpa", "Low", "Medium", "High", "Urgent"];
 
+// Same groups, names and order as the Mac app's sidebar (CCSection.groups).
+const ICON = {
+  house: '<path d="M3 10.5 12 3l9 7.5"/><path d="M5 9.5V21h5v-6h4v6h5V9.5"/>',
+  grid: '<rect x="4" y="4" width="6.5" height="6.5" rx="1.5"/><rect x="13.5" y="4" width="6.5" height="6.5" rx="1.5"/><rect x="4" y="13.5" width="6.5" height="6.5" rx="1.5"/><rect x="13.5" y="13.5" width="6.5" height="6.5" rx="1.5"/>',
+  me: '<circle cx="10" cy="8" r="3.5"/><path d="M3.5 20c.8-3.6 3.4-5.5 6.5-5.5 1.2 0 2.3.3 3.2.8"/><path d="m15 18 2 2 4-4.5"/>',
+  folder: '<path d="M3 6.5A1.5 1.5 0 0 1 4.5 5h4.6l2 2.2h8.4A1.5 1.5 0 0 1 21 8.7v9.8a1.5 1.5 0 0 1-1.5 1.5h-15A1.5 1.5 0 0 1 3 18.5Z"/>',
+  folderGear: '<path d="M3 6.5A1.5 1.5 0 0 1 4.5 5h4.6l2 2.2h8.4A1.5 1.5 0 0 1 21 8.7v3.3"/><path d="M3 6.5v12A1.5 1.5 0 0 0 4.5 20H12"/><circle cx="17.5" cy="17" r="2.2"/><path d="M17.5 13.3v1.5M17.5 19.2v1.5M21.2 17h-1.5M15.3 17h-1.5"/>',
+  history: '<path d="M3.5 12a8.5 8.5 0 1 0 2.5-6"/><path d="M3 4v4.5h4.5"/><path d="M12 7.5V12l3 2"/>',
+  pulse: '<rect x="3" y="4.5" width="18" height="15" rx="2.5"/><path d="M6.5 13h2.5l1.5-4 3 7 1.5-3h2.5"/>',
+  server: '<rect x="3.5" y="4" width="17" height="6.5" rx="1.5"/><rect x="3.5" y="13.5" width="17" height="6.5" rx="1.5"/><path d="M7 7.3h.01M7 16.8h.01"/>',
+  apps: '<circle cx="6.5" cy="6.5" r="2.5"/><circle cx="17.5" cy="17.5" r="2.5"/><path d="M8.5 8.5 15.5 15.5"/><path d="M14 6.5h3.5V10"/>',
+  chart: '<path d="M4 4v16h16"/><path d="m7.5 15 3.5-4.5 3 2.5 4.5-6"/>',
+  route: '<circle cx="5.5" cy="12" r="2.2"/><circle cx="18.5" cy="5.5" r="2.2"/><circle cx="18.5" cy="18.5" r="2.2"/><path d="M7.5 11 16.5 6.5M7.5 13l9 4.5M18.5 7.7v8.6"/>',
+  link: '<path d="M14 4h6v6"/><path d="M20 4 11 13"/><path d="M18 14v5a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V7a1 1 0 0 1 1-1h5"/>',
+};
+const icon = (k) => `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${ICON[k] || ""}</svg>`;
 const NAV = [
-  ["Ringkasan", [["overview", "⌂", "Overview"], ["incidents", "⚑", "Insiden"], ["notify", "✉", "Notifikasi"]]],
-  ["Workspace", [["portfolio", "▦", "Portfolio"], ["tasks", "☑", "Semua task"], ["activity", "↻", "Activity"]]],
-  ["Operations", [["servers", "▤", "Server"], ["websites", "◎", "Website"], ["jobs", "◷", "Cron & job"], ["traffic", "↗", "Traffic"], ["files", "▱", "File"]]],
-  ["Intelligence", [["agents", "◈", "Agents & Token"], ["omniroute", "⇄", "OmniRoute"]]],
+  ["Workspace", [["overview", "house", "Overview"], ["portfolio", "grid", "Portfolio"], ["tasks", "me", "My Work"]]],
+  ["Development", [["projects", "folderGear", "Projects"], ["activity", "history", "Activity"]]],
+  ["Operations", [["monitor", "pulse", "Monitor"], ["servers", "server", "Infrastruktur"], ["websites", "apps", "Aplikasi & Website"], ["files", "folder", "File"]]],
+  ["Intelligence", [["agents", "chart", "Agents & Token"], ["omniroute", "route", "OmniRoute"]]],
 ];
+// Monitor's tabs, like the Mac app's Monitor page.
+const MONITOR_TABS = [["incidents", "Ringkasan"], ["jobs", "Jobs"], ["traffic", "Traffic"], ["notify", "Notifikasi"]];
 
 // ── Formatting ──
 const pct = (v) => (v == null ? "–" : `${Math.round(v * 100)}%`);
@@ -121,14 +139,15 @@ function counts() {
 function renderNav() {
   const c = counts();
   const om = S.state && S.state.omniroute;
-  const badge = { overview: c.bad, websites: c.sitesDown, jobs: c.jobs, servers: c.nodesDown, omniroute: om && om.state === "ok" ? om.down : 0,
-    incidents: S.state ? (S.state.openIncidents || []).length : 0 };
+  const badge = { websites: c.sitesDown, servers: c.nodesDown, omniroute: om && om.state === "ok" ? om.down : 0,
+    monitor: (S.state ? (S.state.openIncidents || []).length : 0) + c.jobs };
+  const monitorOn = MONITOR_TABS.some(([r]) => r === S.route);
   $("#nav").innerHTML = NAV.map(([g, items]) => `<div class="group">${esc(g)}</div>` + items.map(([id, ico, title]) => {
-    const on = S.route === id || (id === "portfolio" && S.route === "project");
-    const b = badge[id] ? `<span class="badge${id === "jobs" ? " warn" : ""}">${badge[id]}</span>` : "";
-    return `<a href="#/${id}" class="${on ? "on" : ""}"><span class="ico">${ico}</span>${esc(title)}${b}</a>`;
+    const on = S.route === id || (id === "projects" && S.route === "project") || (id === "monitor" && monitorOn);
+    const b = badge[id] ? `<span class="badge${id === "monitor" && !c.bad ? " warn" : ""}">${badge[id]}</span>` : "";
+    return `<a href="#/${id}" class="${on ? "on" : ""}"><span class="ico">${icon(ico)}</span>${esc(title)}${b}</a>`;
   }).join("")).join("") + ((S.state && S.state.links || []).length ? `<div class="group">Buka</div>` +
-    S.state.links.map((l) => `<a href="${esc(l.url)}" target="_blank" rel="noopener noreferrer"><span class="ico">↗</span>${esc(l.name)}</a>`).join("") : "");
+    S.state.links.map((l) => `<a href="${esc(l.url)}" target="_blank" rel="noopener noreferrer"><span class="ico">${icon("link")}</span>${esc(l.name)}</a>`).join("") : "");
 }
 function head(title, sub, actions = "") {
   return `<div class="head"><div><h1>${esc(title)}</h1>${sub ? `<p>${sub}</p>` : ""}</div><div class="actions">${actions}</div></div>`;
@@ -143,7 +162,9 @@ function render() {
   const pages = { overview, incidents, notify: notifyPage, servers, websites, jobs, traffic, files: filesPage, agents, omniroute, portfolio, project, tasks, activity };
   const keep = document.activeElement && document.activeElement.id ? document.activeElement.id : null;
   const scroll = window.scrollY;
-  main.innerHTML = (pages[S.route] || overview)();
+  const tabs = MONITOR_TABS.some(([r]) => r === S.route)
+    ? `<nav class="tabs" aria-label="Monitor">${MONITOR_TABS.map(([r, t]) => `<a href="#/${r}" class="${S.route === r ? "on" : ""}">${t}</a>`).join("")}</nav>` : "";
+  main.innerHTML = tabs + (pages[S.route] || overview)();
   if (keep && $("#" + CSS.escape(keep))) { const el = $("#" + CSS.escape(keep)); el.focus(); if (el.setSelectionRange && el.value) el.setSelectionRange(el.value.length, el.value.length); }
   window.scrollTo(0, scroll);
   if (S.route === "servers") drawHistory();
@@ -631,6 +652,38 @@ async function loadAgents(force) {
   } catch (e) { S.agents = { error: e.message, want, at: Date.now() }; }
   if (S.route === "agents") { $("#main").innerHTML = agents(); }
 }
+const compact = (n) => { const v = Number(n) || 0, a = Math.abs(v);
+  return a >= 1e9 ? (v / 1e9).toFixed(2) + "B" : a >= 1e6 ? (v / 1e6).toFixed(1) + "M" : a >= 1e3 ? (v / 1e3).toFixed(1) + "K" : String(Math.round(v)); };
+const SERIES = ["var(--violet)", "var(--mint)", "var(--blue)", "var(--orchid)", "var(--amber)", "#0EA5B7", "var(--red)", "#6366F1", "#84CC16"];
+
+/** Line chart like the Mac app's Swift Charts: shared y axis on the right, grid, first series filled. */
+function lineChart(days, series, height = 260) {
+  const w = 1000, h = height, L = 12, R = 70, T = 10, B = 26, n = days.length;
+  if (!n) return '<div class="muted small">Belum ada data</div>';
+  const hi = Math.max(1, ...days.flatMap((d) => series.map((sr) => d[sr.key] || 0)));
+  const mag = Math.pow(10, Math.floor(Math.log10(hi / 4))), step = [1, 2, 2.5, 5, 10].map((m) => m * mag).find((x) => hi / x <= 4) || mag * 10, top = Math.ceil(hi / step) * step;
+  const x = (i) => L + (n === 1 ? (w - L - R) / 2 : (i / (n - 1)) * (w - L - R)), y = (v) => T + (1 - v / top) * (h - T - B);
+  let g = "";
+  for (let v = 0; v <= top + 1e-9; v += step) g += `<line x1="${L}" x2="${w - R}" y1="${y(v)}" y2="${y(v)}" stroke="var(--line)"/><text x="${w - R + 10}" y="${y(v) + 4}">${compact(v)}</text>`;
+  days.forEach((d, i) => { g += `<line x1="${x(i)}" x2="${x(i)}" y1="${T}" y2="${h - B}" stroke="var(--line)" stroke-dasharray="3 4"/><text x="${x(i)}" y="${h - 6}" text-anchor="middle">${esc((d.date || "").slice(5))}</text>`; });
+  const lines = series.map((sr, k) => {
+    const pts = days.map((d, i) => [x(i), y(d[sr.key] || 0)]), path = pts.map((p, i) => `${i ? "L" : "M"}${p[0].toFixed(1)},${p[1].toFixed(1)}`).join("");
+    const area = k === 0 ? `<path d="${path}L${pts[n - 1][0]},${y(0)}L${pts[0][0]},${y(0)}Z" fill="${sr.color}" opacity=".10"/>` : "";
+    return area + `<path d="${path}" fill="none" stroke="${sr.color}" stroke-width="2.5" stroke-linejoin="round"/>` +
+      pts.map((p, i) => `<circle cx="${p[0]}" cy="${p[1]}" r="3.5" fill="${sr.color}"><title>${esc(sr.label)} ${esc(days[i].date)}: ${num(days[i][sr.key])}</title></circle>`).join("");
+  }).join("");
+  return `<div class="legend">${series.map((sr) => `<span><i style="background:${sr.color}"></i>${esc(sr.label)}</span>`).join("")}</div>
+    <svg class="lchart" viewBox="0 0 ${w} ${h}" preserveAspectRatio="none" style="height:${h}px">${g}${lines}</svg>`;
+}
+
+/** "Dari mana" / "Model" cards: one stacked bar, then rows with value and share. */
+function breakdown(title, items) {
+  const total = items.reduce((a, b) => a + (b.tokens || 0), 0) || 1;
+  const bar = items.map((b, i) => `<i style="flex:${b.tokens || 0};background:${SERIES[i % SERIES.length]}" title="${esc(b.name)}"></i>`).join("");
+  const rows = items.slice(0, 6).map((b, i) => `<div class="brow"><span class="sq" style="background:${SERIES[i % SERIES.length]}"></span><span class="ellipsis" title="${esc(b.name)} · ${num(b.sessions)} sesi · ${num(b.calls)} panggilan">${esc(b.name)}</span><span class="num">${compact(b.tokens)}</span><span class="pc">${Math.round((b.tokens || 0) / total * 100)}%</span></div>`).join("");
+  return `<div class="card"><div class="lbl">${esc(title)}</div>${items.length ? `<div class="stackbar">${bar}</div>${rows}` : '<div class="muted small" style="margin-top:10px">–</div>'}</div>`;
+}
+
 function agents() {
   const a = S.agents;
   if (!a) return head("Agents & Token", "Memuat…");
@@ -638,25 +691,33 @@ function agents() {
   const sel = `<select id="profileSel">${a.profiles.map((p) => `<option value="${esc(p.id)}" ${p.id === a.profile ? "selected" : ""}>${esc(p.name)}</option>`).join("")}</select>`;
   const s = a.snapshot;
   if (!s || s.error) return head("Agents & Token", esc((s && s.error) || "Tidak ada data"), sel);
-  const week = s.days.reduce((x, d) => x + d.tokens, 0), weekCalls = s.days.reduce((x, d) => x + d.calls, 0);
-  const kpi = (v, l, n = "") => `<div class="card kpi"><div class="v">${v}</div><div class="l">${esc(l)}</div><div class="n">${n}</div></div>`;
-  const bucket = (list) => list.map((b) => `<div class="item"><div class="ellipsis" style="flex:1"><b>${esc(b.name)}</b><div class="tiny muted">${num(b.sessions)} sesi · ${num(b.calls)} panggilan</div></div><span class="mono small">${fmtTok(b.tokens)}</span></div>`).join("") || '<div class="muted small">–</div>';
+  const prof = (a.profiles.find((p) => p.id === a.profile) || {}).name || "Hermes";
+  const all = s.allTime, total = all.input + all.cacheRead + all.output;
+  const sum = (k) => s.days.reduce((x, d) => x + (d[k] || 0), 0);
+  const week = sum("tokens"), weekCalls = sum("calls"), ctx = weekCalls ? (sum("input") + sum("cacheRead")) / weekCalls : 0;
+  const cacheRatio = sum("input") + sum("cacheRead") ? sum("cacheRead") / (sum("input") + sum("cacheRead")) : 0;
+  const mini = (l, v, n) => `<div class="mini"><div class="lbl">${l}</div><div class="v">${v}</div><div class="n">${n}</div></div>`;
+  const stat = (l, v, n, color = "") => `<div class="card stat"><div class="lbl">${l}</div><div class="v" ${color ? `style="color:${color}"` : ""}>${v}</div><div class="n">${n}</div></div>`;
+  const days = s.days.map((d) => ({ ...d, total: d.tokens }));
   const recent = s.recent.map((x) => `<div class="item"><span class="dot ${x.active ? "ok" : ""}"></span><div class="ellipsis" style="flex:1"><b>${esc(x.title)}</b>
       <div class="tiny muted ellipsis">${esc(x.source)} · ${esc(x.model)} · ${num(x.messages)} pesan · ${num(x.toolCalls)} tool</div></div>
-      <span class="small muted">${fmtTok(x.input + x.cacheRead + x.output)} · ${ago(x.lastActivity || x.startedAt)}</span></div>`).join("");
-  return head("Agents & Token", "Sesi dan pemakaian token Hermes di server ini (dibaca langsung dari state.db, hanya baca)", sel +
-      `<button class="btn" data-act="agentsReload">↻ Refresh</button>`) +
-    `<div class="grid g4" style="margin-bottom:16px">
-      ${kpi(fmtTok(s.today.tokens), "Token hari ini", `${num(s.today.calls)} panggilan API`)}
-      ${kpi(fmtTok(week), "Token 7 hari", `${num(weekCalls)} panggilan`)}
-      ${kpi(num(s.allTime.sessions), "Sesi total", `${fmtTok(s.allTime.input + s.allTime.cacheRead + s.allTime.output)} token sepanjang waktu`)}
-      ${kpi(s.allTime.cost ? "$" + s.allTime.cost.toFixed(2) : "–", "Biaya tercatat", `state.db ${bytes(s.dbBytes)}`)}
-    </div>
-    <div class="card" style="margin-bottom:16px"><h2>Token per hari · 7 hari</h2>${barsChart(s.days, "tokens", "var(--violet)")}</div>
-    <div class="grid g2">
-      <div class="card"><h2>Sesi terbaru</h2><div class="list">${recent || '<div class="muted">Belum ada sesi.</div>'}</div></div>
-      <div class="stack"><div class="card"><h2>Per sumber · 7 hari</h2><div class="list">${bucket(s.sources)}</div></div>
-        <div class="card"><h2>Per model · 7 hari</h2><div class="list">${bucket(s.models)}</div></div></div>
+      <span class="small muted">${compact(x.input + x.cacheRead + x.output)} · ${ago(x.lastActivity || x.startedAt)}</span></div>`).join("");
+  return head("Agents & Token", `Hermes · ${esc(prof)} · berapa token terpakai dan untuk apa`, sel + `<button class="btn" data-act="agentsReload">↻ Refresh</button>`) +
+    `<div class="stack">
+      <div class="card hero-card"><div><div class="lbl">Total token terpakai · sepanjang waktu</div><div class="big">${num(total)}</div>
+        <div class="small muted">${num(all.sessions)} sesi · ${num(all.calls)} panggilan API</div></div>
+        <div class="minis">${mini("Hari ini", compact(s.today.tokens), `${num(s.today.calls)} call`)}${mini("7 hari", compact(week), `${num(weekCalls)} call`)}
+          ${mini("Input baru", compact(all.input), "semua waktu")}${mini("Cache read", compact(all.cacheRead), "konteks diulang")}${mini("Output", compact(all.output), "jawaban")}</div></div>
+      <div class="grid g3">
+        ${stat("Konteks / panggilan", compact(ctx), ctx > 30000 ? "terlalu besar · target &lt; 30K" : "sehat · target &lt; 30K", ctx > 30000 ? "var(--red)" : "var(--green)")}
+        ${stat("Rasio cache", `${Math.round(cacheRatio * 100)}%`, "makin tinggi makin murah")}
+        ${stat("State.db", bytes(s.dbBytes), all.cost ? `biaya tercatat $${all.cost.toFixed(2)}` : "database sesi Hermes")}
+      </div>
+      <div class="card"><div class="lbl">Token per hari · 7 hari</div>${lineChart(days, [
+        { key: "total", label: "Total", color: "var(--violet)" }, { key: "cacheRead", label: "Cache read", color: "var(--orchid)" },
+        { key: "input", label: "Input baru", color: "var(--blue)" }, { key: "output", label: "Output", color: "var(--mint)" }])}</div>
+      <div class="grid g2">${breakdown("Dari mana · 7 hari", s.sources)}${breakdown("Model · 7 hari", s.models)}</div>
+      <div class="card"><div class="lbl" style="margin-bottom:6px">Sesi terbaru</div><div class="list">${recent || '<div class="muted">Belum ada sesi.</div>'}</div></div>
     </div>`;
 }
 
@@ -830,7 +891,7 @@ function cardAfter(col, y) {
 // ── Workspace: tasks & activity ──
 function tasks() {
   const ws = S.ws;
-  if (!ws) return head("Semua task", "Memuat…");
+  if (!ws) return head("My Work", "Memuat…");
   const f = S.filters, mine = f.assignee || "";
   const proj = Object.fromEntries(ws.projects.map((p) => [p.id, p]));
   const list = ws.tasks.filter((t) => !t.archived && !t.parent_id && t.status !== "done" && proj[t.project_id] && proj[t.project_id].lifecycle !== "archived" && !proj[t.project_id].paused
@@ -841,7 +902,7 @@ function tasks() {
     <td><b>${esc(t.title)}</b>${t.blocked ? ' <span class="chip bad">terblokir</span>' : ""}<div class="tiny muted">${esc(p.name)}</div></td>
     <td class="small">${esc((STATUSES.find((s) => s[0] === t.status) || [])[1])}</td><td class="small">${t.priority ? `<span class="prio p${t.priority}">${PRIO[t.priority]}</span>` : "–"}</td>
     <td class="small">${esc(t.assignee || "–")}</td><td class="small ${dueClass(t)}">${t.due_date ? day(t.due_date) : "–"}</td></tr>`; }).join("");
-  return head("Semua task", `${list.length} task terbuka di project aktif`, sel) +
+  return head("My Work", `${list.length} task terbuka di project aktif`, sel) +
     `<div class="card scroll-x">${rows ? `<table class="tbl"><tr><th>#</th><th>Task</th><th>Status</th><th>Prioritas</th><th>PIC</th><th>Tenggat</th></tr>${rows}</table>` : `<div class="empty"><b>Tidak ada task terbuka</b></div>`}</div>`;
 }
 function activity() {
@@ -1002,12 +1063,21 @@ function applyTheme(t) {
   try { localStorage.setItem("raphaelTheme", t); } catch { /* private mode */ }
 }
 $$(".theme button").forEach((b) => b.addEventListener("click", () => applyTheme(b.dataset.theme)));
-let savedTheme = "auto"; try { savedTheme = localStorage.getItem("raphaelTheme") || "auto"; } catch { /* ignore */ }
+let savedTheme = "light"; try { savedTheme = localStorage.getItem("raphaelTheme") || "light"; } catch { /* ignore */ }   // the Mac app is light by default too
 applyTheme(savedTheme);
 
 // Routing & polling
 function route() {
-  const [r, arg] = location.hash.replace(/^#\/?/, "").split("/");
+  let [r, arg] = location.hash.replace(/^#\/?/, "").split("/");
+  if (r === "monitor") { location.replace("#/incidents"); return; }
+  if (r === "projects") {                                   // like the Mac app: the board of the last (or first active) project
+    const ps = S.ws ? S.ws.projects.filter((p) => p.lifecycle !== "archived") : [];
+    let last = ""; try { last = localStorage.getItem("raphaelLastProject") || ""; } catch { /* ignore */ }
+    const p = ps.find((x) => x.id === last) || ps[0];
+    if (p) { location.replace(`#/project/${p.id}`); return; }
+    r = "portfolio";
+  }
+  if (r === "project" && arg) { try { localStorage.setItem("raphaelLastProject", decodeURIComponent(arg)); } catch { /* ignore */ } }
   S.route = r || "overview"; S.arg = decodeURIComponent(arg || "");
   render();
   $("#main").focus({ preventScroll: true });
