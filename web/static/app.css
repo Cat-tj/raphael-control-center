@@ -71,7 +71,9 @@ main { padding: 28px 32px 60px; min-width: 0; outline: none; }
 /* Controls */
 .btn { display: inline-flex; align-items: center; gap: 6px; border: 1px solid var(--line); background: var(--surface); padding: 7px 14px; border-radius: 999px; cursor: pointer; font-weight: 600; font-size: 13px; color: var(--navy); white-space: nowrap; }
 .btn:hover { border-color: var(--violet); }
-.btn.primary { background: var(--violet); border-color: var(--violet); color: #fff; }
+.btn.primary { background: var(--green); border-color: var(--green); color: #fff; box-shadow: 0 5px 12px rgba(14, 122, 87, .30); }
+.btn.primary:hover { border-color: var(--green); filter: brightness(1.06); }
+.btn svg { width: 15px; height: 15px; flex: none; }
 .btn.danger { color: var(--red); }
 .btn:disabled { opacity: .5; cursor: default; }
 .btn.sm { padding: 4px 10px; font-size: 12px; }
@@ -351,3 +353,41 @@ svg.lchart text { font: 11px -apple-system, BlinkMacSystemFont, sans-serif; fill
 .search { display: flex; align-items: center; gap: 8px; }
 .search svg { width: 15px; height: 15px; flex: none; }
 .search kbd { margin-left: auto; }
+
+/* Workspace pages */
+.estate { display: flex; flex-direction: column; align-items: center; text-align: center; gap: 10px; padding: 30px 16px; }
+.estate .eico { color: var(--violet); width: 34px; height: 34px; }
+.estate .eico svg { width: 34px; height: 34px; }
+.estate b { font-size: 15px; }
+.estate p { margin: 0; max-width: 460px; color: var(--muted); font-size: 12.5px; }
+.estate .row { margin-top: 4px; }
+.g6 { grid-template-columns: repeat(auto-fit, minmax(min(100%, 150px), 1fr)); }
+.okpi { padding: 14px; }
+.okpi .v { font-size: 22px; font-weight: 850; margin: 6px 0 2px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.okpi .n { font-size: 10.5px; color: var(--muted); }
+.attn { display: flex; gap: 12px; align-items: flex-start; padding: 10px; border-radius: 10px; background: var(--canvas); color: inherit; margin-bottom: 6px; }
+.attn:hover { text-decoration: none; outline: 1px solid var(--violet-soft); }
+.attn .next { width: 220px; text-align: right; flex: none; }
+@media (max-width: 640px) { .attn { flex-direction: column; } .attn .next { width: auto; text-align: left; } }
+.list > .item.click { cursor: pointer; border-radius: 8px; }
+.list > .item.click:hover { background: var(--wash); }
+.synced { display: inline-flex; align-items: center; gap: 5px; color: var(--green); margin-left: 6px; }
+.synced svg { width: 15px; height: 15px; }
+.ctlrow { gap: 10px; margin: -4px 0 16px; }
+.check { display: inline-flex; align-items: center; gap: 6px; font-size: 13px; color: var(--navy); cursor: pointer; }
+.check input { accent-color: var(--violet); width: 15px; height: 15px; }
+.kanban { display: grid; grid-template-columns: repeat(5, minmax(200px, 1fr)); gap: 12px; overflow-x: auto; padding-bottom: 6px; }
+.kcol { background: var(--wash); border-radius: 14px; padding: 10px; display: flex; flex-direction: column; gap: 8px; min-height: 120px; }
+.kcard { display: flex; flex-direction: column; gap: 6px; padding: 12px; color: inherit; }
+.kcard:hover { text-decoration: none; border-color: var(--violet); }
+.projects { display: grid; grid-template-columns: 250px minmax(0, 1fr); margin: -28px -32px -60px; min-height: 100vh; }
+.ppane { border-right: 1px solid var(--line); padding: 14px 12px; background: var(--surface); display: flex; flex-direction: column; gap: 10px; }
+.plist { display: flex; flex-direction: column; gap: 2px; }
+.plist a { display: flex; gap: 9px; align-items: flex-start; padding: 8px 10px; border-radius: 10px; color: inherit; }
+.plist a .dot { margin-top: 5px; }
+.plist a:hover { background: var(--wash); text-decoration: none; }
+.plist a.on { background: var(--violet-soft); }
+.pmain { padding: 28px 32px 60px; min-width: 0; }
+.pempty { min-height: 70vh; display: grid; place-items: center; }
+.icon-btn { padding: 6px 9px; }
+@media (max-width: 860px) { .projects { grid-template-columns: 1fr; margin: 0; min-height: 0; } .ppane { border-right: 0; border-radius: 14px; border: 1px solid var(--line); } .pmain { padding: 18px 0; } }

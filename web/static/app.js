@@ -158,7 +158,7 @@ function render() {
   const main = $("#main");
   if (!S.state && !S.error) { main.innerHTML = `<div class="empty"><b>Memuat…</b></div>`; return; }
   if (S.error && !S.state) { main.innerHTML = `<div class="empty"><b>Server tidak menjawab</b>${esc(S.error)}</div>`; return; }
-  const pages = { overview, monitor: monitorPage, servers: infra, websites: appsAndSites, files: filesPage, agents, omniroute, portfolio, project, tasks, activity };
+  const pages = { overview, monitor: monitorPage, servers: infra, websites: appsAndSites, files: filesPage, agents, omniroute, portfolio, project: projectsPage, projects: projectsPage, tasks, activity };
   const keep = document.activeElement && document.activeElement.id ? document.activeElement.id : null;
   const scroll = window.scrollY;
   main.innerHTML = (pages[S.route] || overview)();
@@ -309,39 +309,150 @@ function appsAndSites() {
     `<div class="stack"><div class="card"><div class="lbl" style="margin-bottom:8px">Website</div>${rows || '<div class="small muted">Belum ada website.</div>'}</div>${appCards(S.state.nodes)}</div>`;
 }
 
-// ── Overview ──
-function overview() {
-  const st = S.state, ws = S.ws, c = counts();
-  const online = st.nodes.filter((n) => n.detail && !n.detail.error).length;
-  const up = st.sites.filter((s) => s.status && s.status.ok).length, checked = st.sites.filter((s) => s.status).length;
-  const active = ws ? ws.projects.filter((p) => p.lifecycle !== "archived" && !p.paused).length : 0;
-  const overdue = ws ? ws.projects.reduce((a, p) => a + (p.overdue_tasks || 0), 0) : 0;
-  const kpi = (v, l, n, cls = "") => `<div class="card kpi"><div class="v ${cls}">${v}</div><div class="l">${esc(l)}</div><div class="n">${n}</div></div>`;
-  const alerts = st.alerts.slice(0, 12).map((a) => `<div class="item"><span class="dot ${["info", "warn", "bad"][a.level]}"></span>
-      <div class="ellipsis"><b>${esc(a.node)}</b> <span class="muted">·</span> ${esc(a.text)}</div></div>`).join("");
-  const nodes = st.nodes.map((n) => {
-    const d = n.detail, s = n.last;
-    const stt = !d ? `<span class="chip">belum ada data</span>` : d.error ? `<span class="chip bad">tidak terhubung</span>` : `<span class="chip ok">online</span>`;
-    return `<div class="item"><div class="ellipsis" style="flex:1"><b>${esc(n.name)}</b><div class="tiny muted ellipsis">${esc(hwSummary(d))}</div></div>
-      ${s ? `<span class="small muted hide-sm">CPU ${pct(s.cpu)} · RAM ${pct(s.mem)} · Disk ${pct(s.disk)}</span>` : ""}${stt}</div>`;
-  }).join("");
-  return head("Overview", st.alerts.length ? `${c.bad} masalah serius · ${st.alerts.length - c.bad} perlu dicek` : "Semua yang dipantau dalam kondisi baik", refreshBtn) +
-    `<div class="grid g4" style="margin-bottom:16px">
-      ${kpi(`${online}/${st.nodes.length}`, "Device online", "disampling tiap 60 detik", online < st.nodes.length ? "red" : "")}
-      ${kpi(checked ? `${up}/${st.sites.length}` : "–", "Website up", checked ? "dicek tiap 60 detik" : "belum dicek", up < checked ? "red" : "")}
-      ${kpi(c.bad, "Masalah serius", `${st.alerts.length} alert total`, c.bad ? "red" : "")}
-      ${kpi(ws ? active : "–", "Project aktif", ws ? `${c.open} task terbuka${overdue ? ` · <span class="red">${overdue} lewat tenggat</span>` : ""}` : "")}
-    </div>
-    <div class="grid g2">
-      <div class="card"><h2>Perlu perhatian</h2>${alerts ? `<div class="list">${alerts}</div>` : `<div class="empty"><b>Tidak ada alert</b>Semua sinyal yang dipantau normal.</div>`}</div>
-      <div class="stack">
-        ${(st.openIncidents || []).length ? `<div class="card"><h2>Insiden terbuka</h2><div class="list">${st.openIncidents.map((i) => `<div class="item"><span class="dot bad"></span><div class="ellipsis" style="flex:1"><b>${esc(i.title)}</b><div class="tiny muted ellipsis">${esc(i.detail || "")}</div></div><span class="small muted">sejak ${ago(i.started)}</span></div>`).join("")}</div><div class="small" style="margin-top:6px"><a href="#/monitor/incidents">Riwayat insiden →</a></div></div>` : ""}
-        <div class="card"><h2>Device</h2><div class="list">${nodes}</div></div>
-        ${backupCard()}
-        <div class="card"><h2>Website</h2><div class="list">${st.sites.map(siteLine).join("") || `<div class="muted">Belum ada website.</div>`}</div></div>
-      </div>
-    </div>`;
+// ── Workspace pages, laid out like the Mac app (OverviewView, PortfolioView, ProjectWorkspace, Activity) ──
+Object.assign(ICON, {
+  sparkles: '<path d="M12 3.5 13.6 9l5.4 1.6-5.4 1.6L12 17.6l-1.6-5.4L5 10.6 10.4 9Z"/><path d="M18.5 3v3M17 4.5h3M5.5 16.5v3M4 18h3"/>',
+  check: '<circle cx="12" cy="12" r="8.5"/><path d="m8.2 12.3 2.6 2.6 5-5.4"/>',
+  folderPlus: '<path d="M3 6.5A1.5 1.5 0 0 1 4.5 5h4.6l2 2.2h8.4A1.5 1.5 0 0 1 21 8.7v9.8a1.5 1.5 0 0 1-1.5 1.5h-15A1.5 1.5 0 0 1 3 18.5Z"/><path d="M12 11v6M9 14h6"/>',
+  search: '<circle cx="11" cy="11" r="6.5"/><path d="m20 20-4.2-4.2"/>',
+  plus: '<path d="M12 5v14M5 12h14"/>',
+  sync: '<path d="M4.5 12a7.5 7.5 0 0 1 12.8-5.3L19.5 9"/><path d="M19.5 4.5V9H15"/><path d="M19.5 12a7.5 7.5 0 0 1-12.8 5.3L4.5 15"/><path d="M4.5 19.5V15H9"/>',
+  cloud: '<path d="M7 18.5a4.5 4.5 0 0 1-.6-9 6 6 0 0 1 11.4 1.6A3.8 3.8 0 0 1 17.3 18.5Z"/><path d="m9.5 13.5 2 2 3.5-3.5"/>',
+});
+function emptyState(ic, title, msg, primary, secondary) {
+  return `<div class="estate"><span class="eico">${icon(ic)}</span><b>${esc(title)}</b><p>${esc(msg)}</p>
+    <div class="row" style="justify-content:center;gap:8px">${primary ? `<button class="btn primary" data-act="${primary[1]}">${esc(primary[0])}</button>` : ""}${secondary ? `<button class="btn" data-act="${secondary[1]}">${esc(secondary[0])}</button>` : ""}</div></div>`;
 }
+const meName = () => { try { return localStorage.getItem("raphaelMe") || "Saya"; } catch { return "Saya"; } };
+const projActions = `<button class="btn" data-act="discover">${icon("search")} Temukan project</button><button class="btn primary" data-act="newProject">${icon("plus")} Project baru</button>`;
+const openTasks = (ws) => ws.tasks.filter((t) => !t.archived && !t.parent_id && t.status !== "done");
+const isOverdue = (t) => t.due_date && t.due_date < Date.now() / 1000 && t.status !== "done";
+
+function overview() {
+  const ws = S.ws;
+  if (!ws) return head("Overview", "Memuat…");
+  const live = ws.projects.filter((p) => p.lifecycle !== "archived");
+  if (!ws.projects.length) return head("Overview", "Belum ada project", projActions) + `<div class="card">${emptyState("sparkles", "Mulai dengan project",
+    "Raphael menyatukan task, roadmap, repo, deployment dan kesehatan server per project. Temukan project dari ~/Projects, GitHub, Vercel dan Monitor, atau buat sendiri. Angka di halaman ini baru muncul setelah ada data nyata.",
+    ["Temukan project", "discover"], ["Project baru", "newProject"])}</div>`;
+  const now = Date.now() / 1000, open = openTasks(ws), proj = Object.fromEntries(ws.projects.map((p) => [p.id, p]));
+  const active = live.filter((p) => !p.paused).length, wip = open.filter((t) => t.status === "in_progress").length;
+  const overdue = open.filter(isOverdue).length, blocked = open.filter((t) => t.blocked).length;
+  const risk = ws.milestones.filter((m) => !m.completed_at && m.target_date && m.target_date < now + 7 * 86400);
+  const done90 = ws.tasks.filter((t) => t.completed_at && t.started_at && t.completed_at > now - 90 * 86400);
+  const cycle = done90.length ? done90.reduce((a, t) => a + (t.completed_at - t.started_at), 0) / done90.length / 86400 : null;
+  const kpi = (l, v, n, tone) => `<div class="card okpi"><div class="lbl">${l}</div><div class="v" ${tone ? `style="color:${tone}"` : ""}>${v}</div><div class="n">${n}</div></div>`;
+  const attention = live.filter((p) => !p.paused).map((p) => {
+    const ts = open.filter((t) => t.project_id === p.id), r = [];
+    let action = "", score = 0;
+    const mr = risk.filter((m) => m.project_id === p.id);
+    if (mr.length) { r.push([`Milestone berisiko: ${mr.map((m) => m.title).join(", ")}`, "var(--red)"]); action = "Tinjau cakupan atau tanggal milestone"; score += 15 * mr.length; }
+    const od = ts.filter(isOverdue).length, bl = ts.filter((t) => t.blocked).length;
+    if (od) { r.push([`${od} task lewat tenggat`, "var(--red)"]); action ||= "Selesaikan atau jadwal ulang task yang lewat"; score += 5 * od; }
+    if (bl) { r.push([`${bl} task terblokir`, "var(--amber)"]); action ||= "Lepaskan blokir"; score += 4 * bl; }
+    if (p.target_date && p.target_date < now && ["idea", "planned", "building"].includes(p.lifecycle)) { r.push([`Target project lewat (${day(p.target_date)})`, "var(--amber)"]); action ||= "Perbarui target atau lifecycle"; score += 6; }
+    return { p, r, action, score };
+  }).filter((a) => a.r.length).sort((a, b) => b.score - a.score);
+  const attHtml = attention.length ? attention.slice(0, 8).map((a) => `<a class="attn" href="#/project/${esc(a.p.id)}"><div style="flex:1;min-width:0"><div class="row" style="gap:6px"><b>${esc(a.p.name)}</b><span class="chip">${esc(lcTitle(a.p.lifecycle))}</span></div>
+      ${a.r.slice(0, 3).map(([t, c]) => `<div class="small ellipsis" style="color:var(--ink2)"><span class="dot" style="background:${c};width:6px;height:6px"></span> ${esc(t)}</div>`).join("")}</div>
+      <div class="next"><div class="tiny muted">Berikutnya</div><div class="small" style="color:var(--violet);font-weight:650">${esc(a.action)}</div></div></a>`).join("")
+    : '<div class="small green">✓ Tidak ada yang mendesak: tidak ada task lewat tenggat, blokir, milestone berisiko atau target yang lewat.</div>';
+  const me = meName(), mine = open.filter((t) => t.assignee === me).sort((a, b) => (isOverdue(b) - isOverdue(a)) || ((a.due_date || 9e12) - (b.due_date || 9e12))).slice(0, 7);
+  const taskLine = (t) => `<div class="item click" data-act="task" data-v="${esc(t.id)}"><span class="dot ${isOverdue(t) ? "bad" : t.status === "in_progress" ? "info" : ""}"></span><div class="ellipsis" style="flex:1"><b class="small">${esc(t.title)}</b><div class="tiny muted">${esc((proj[t.project_id] || {}).name || "")}</div></div><span class="tiny ${isOverdue(t) ? "red" : "muted"}">${t.due_date ? day(t.due_date) : ""}</span></div>`;
+  const weeks = Array.from({ length: 8 }, (_, i) => { const end = now - (7 - i) * 7 * 86400, start = end - 7 * 86400;
+    return { date: new Date(end * 1000).toISOString().slice(0, 10), done: ws.tasks.filter((t) => t.completed_at > start && t.completed_at <= end).length }; });
+  const st = S.state, crit = st ? st.alerts.filter((a) => a.level === 2).length : 0;
+  const ev = ws.activity.slice(0, 10).map((a) => `<div class="item"><span class="dot info"></span><div class="ellipsis" style="flex:1"><span class="small">${esc(a.title)}</span><div class="tiny muted">${esc(a.project_name || "")}</div></div><span class="tiny muted">${ago(a.ts)}</span></div>`).join("");
+  return head("Overview", attention.length ? `${attention.length} project perlu perhatian` : "Tidak ada project yang butuh perhatian", projActions) +
+    `<div class="stack"><div class="grid g6">${kpi("Project aktif", active, "tidak paused")}${kpi("Task terbuka", open.length, `${wip} sedang dikerjakan`)}
+      ${kpi("Lewat tenggat", overdue, "task belum selesai", overdue ? "var(--red)" : "")}${kpi("Terblokir", blocked, "flag / dependensi", blocked ? "var(--amber)" : "")}
+      ${kpi("Milestone berisiko", risk.length, "lewat atau mepet", risk.length ? "var(--red)" : "")}${kpi("Siklus rata-rata", cycle == null ? "–" : `${cycle.toFixed(1)} hari`, cycle == null ? "belum ada data" : `${done90.length} task, 90 hari`)}</div>
+    <div class="sumgrid"><div class="card"><div class="lbl" style="margin-bottom:10px">Perlu perhatian & langkah berikutnya</div>${attHtml}</div>
+      <div class="card"><div class="row"><span class="lbl">Task saya berikutnya</span><span class="spacer"></span><a class="small" href="#/tasks">My Work</a></div><div class="list">${mine.map(taskLine).join("") || `<div class="small muted">Belum ada task yang ditugaskan ke ${esc(me)}.</div>`}</div></div></div>
+    <div class="sumgrid"><div class="card"><div class="row"><span class="lbl">Task selesai per minggu · 8 minggu</span><span class="spacer"></span><span class="tiny muted">dari tanggal selesai task</span></div>
+        ${weeks.some((w) => w.done) ? lineChart(weeks, [{ key: "done", label: "Selesai", color: "var(--violet)" }], 160) : '<div class="small muted" style="height:120px">Belum ada task yang selesai dalam 8 minggu terakhir.</div>'}</div>
+      <div class="card"><div class="lbl" style="margin-bottom:8px">Operasional</div>
+        <div class="prow"><span>Sinyal kritis</span><span></span><b class="${crit ? "red" : "green"}">${crit}</b></div>
+        <div class="prow"><span>Server online</span><span></span><b>${st ? st.nodes.filter((n) => !nodeDown(n)).length + "/" + st.nodes.length : "–"}</b></div>
+        <div class="prow"><span>Website naik</span><span></span><b>${st ? st.sites.filter((s) => s.status && s.status.ok).length + "/" + st.sites.length : "–"}</b></div>
+        <a class="small" href="#/monitor">Buka Monitor →</a></div></div>
+    <div class="card"><div class="row"><span class="lbl">Aktivitas terbaru</span><span class="spacer"></span><a class="small" href="#/activity">Semua</a></div><div class="list">${ev || '<div class="small muted">Belum ada aktivitas.</div>'}</div></div></div>`;
+}
+
+function portfolio() {
+  const ws = S.ws;
+  if (!ws) return head("Portfolio", "Memuat…");
+  const f = S.filters, view = f.pview || "grid", q = (f.pq || "").toLowerCase();
+  const all = ws.projects.filter((p) => p.lifecycle !== "archived");
+  const list = all.filter((p) => (f.pfav ? p.favorite : true) && (f.ppaused === false ? !p.paused : true)
+    && (!q || `${p.name} ${p.key} ${p.description || ""} ${p.labels || ""}`.toLowerCase().includes(q)));
+  const sub = `${all.filter((p) => !p.paused).length} project aktif · ${all.filter((p) => p.lifecycle === "building").length} building · ${all.filter((p) => p.lifecycle === "live").length} live
+    <span class="synced">${icon("cloud")} Workspace bersama di Raphael Web · rev ${S.ws.rev ?? "–"}</span>`;
+  const ctl = `<div class="row wrap ctlrow"><div class="seg">${[["grid", "Grid"], ["list", "List"], ["kanban", "Kanban"]].map(([v, t]) => `<button class="${view === v ? "on" : ""}" data-act="pview" data-v="${v}">${t}</button>`).join("")}</div>
+    <input type="search" id="pq" placeholder="Cari project, label…" value="${esc(f.pq || "")}" style="width:260px">
+    <label class="check"><input type="checkbox" data-act="pfav" ${f.pfav ? "checked" : ""}> Favorit</label><label class="check"><input type="checkbox" data-act="ppaused" ${f.ppaused === false ? "" : "checked"}> Paused</label></div>`;
+  if (!ws.projects.length) return head("Portfolio", sub, projActions) + ctl + `<div class="card">${emptyState("grid", "Belum ada project",
+    "Buat project sendiri, atau biarkan Raphael menemukan project dari ~/Projects, GitHub, Vercel dan aplikasi yang dipantau di Monitor. Kamu yang memutuskan mana yang digabung.", ["Temukan project", "discover"], ["Project baru", "newProject"])}</div>`;
+  const prog = (p) => p.progress == null ? `<span class="small muted">Belum terukur</span>` : `<div class="row"><div class="mbar" style="flex:1;margin:0"><i style="width:${Math.round(p.progress * 100)}%;background:var(--green)"></i></div><span class="small mono">${pct(p.progress)}</span></div>`;
+  let body;
+  if (view === "list") {
+    body = `<div class="card scroll-x"><table class="tbl"><tr><th>Project</th><th>Lifecycle</th><th>Progress</th><th>Task terbuka</th><th>Target</th></tr>${list.map((p) => `<tr class="click" data-act="openProject" data-v="${esc(p.id)}"><td><span class="chip v mono">${esc(p.key)}</span> <b>${esc(p.name)}</b>${p.paused ? ' <span class="chip warn">paused</span>' : ""}</td><td class="small">${esc(lcTitle(p.lifecycle))}</td><td style="min-width:140px">${prog(p)}</td><td class="small">${p.open_tasks}${p.blocked_tasks ? ` · <span class="red">${p.blocked_tasks} terblokir</span>` : ""}</td><td class="small">${p.target_date ? day(p.target_date) : "–"}</td></tr>`).join("")}</table></div>`;
+  } else if (view === "kanban") {
+    body = `<div class="kanban">${LIFECYCLES.filter(([v]) => v !== "archived").map(([v, t]) => { const col = list.filter((p) => p.lifecycle === v);
+      return `<div class="kcol"><div class="row"><span class="lbl">${t}</span><span class="spacer"></span><span class="tiny muted">${col.length}</span></div>${col.map((p) => `<a class="card kcard" href="#/project/${esc(p.id)}"><span class="chip v mono">${esc(p.key)}</span><b>${esc(p.name)}</b>${prog(p)}</a>`).join("")}</div>`; }).join("")}</div>`;
+  } else {
+    body = `<div class="grid g3">${list.map((p) => `<a class="card pcard" href="#/project/${esc(p.id)}" style="color:inherit;text-decoration:none">
+      <div class="row"><span class="chip v mono">${esc(p.key)}</span><span class="chip">${esc(lcTitle(p.lifecycle))}</span>${p.paused ? '<span class="chip warn">paused</span>' : ""}${p.favorite ? '<span class="chip">★</span>' : ""}<span class="spacer"></span>${p.priority >= 3 ? `<span class="prio p${p.priority}">${PRIO[p.priority]}</span>` : ""}</div>
+      <div><h3>${esc(p.name)}</h3><div class="small muted ellipsis">${esc(p.description || "")}</div></div>${prog(p)}
+      <div class="small muted">${p.open_tasks} task terbuka${p.blocked_tasks ? ` · <span class="red">${p.blocked_tasks} terblokir</span>` : ""}${p.overdue_tasks ? ` · <span class="red">${p.overdue_tasks} lewat tenggat</span>` : ""}${p.target_date ? ` · target ${day(p.target_date)}` : ""}</div></a>`).join("")}</div>`;
+  }
+  return head("Portfolio", sub, projActions) + ctl + (list.length ? body : `<div class="card">${emptyState("search", "Tidak ada project di filter ini", "Ubah pencarian atau filter di atas.")}</div>`);
+}
+
+function tasks() {
+  const ws = S.ws;
+  if (!ws) return head("My Work", "Memuat…");
+  const me = meName(), withNone = !!S.filters.unassigned, proj = Object.fromEntries(ws.projects.map((p) => [p.id, p]));
+  const list = openTasks(ws).filter((t) => proj[t.project_id] && (t.assignee === me || (withNone && !t.assignee)))
+    .sort((a, b) => (isOverdue(b) - isOverdue(a)) || ((a.due_date || 9e12) - (b.due_date || 9e12)) || b.priority - a.priority);
+  const ctl = `<label class="small muted row" style="gap:8px">Nama saya <input type="text" id="meName" value="${esc(me)}" style="width:150px"></label><label class="check"><input type="checkbox" data-act="unassigned" ${withNone ? "checked" : ""}> Termasuk tanpa orang</label>`;
+  const groups = STATUSES.filter(([s]) => s !== "done").map(([s, title]) => [title, list.filter((t) => t.status === s)]).filter(([, l]) => l.length);
+  const body = groups.map(([title, l]) => `<div class="card"><div class="lbl" style="margin-bottom:6px">${esc(title)} · ${l.length}</div><div class="list">${l.map((t) => { const p = proj[t.project_id];
+    return `<div class="item click" data-act="task" data-v="${esc(t.id)}"><span class="mono tiny muted">${esc(p.key)}-${t.number}</span><div class="ellipsis" style="flex:1"><b class="small">${esc(t.title)}</b>${t.blocked ? ' <span class="chip bad">terblokir</span>' : ""}<div class="tiny muted">${esc(p.name)}</div></div>${t.priority ? `<span class="prio p${t.priority}">${PRIO[t.priority]}</span>` : ""}<span class="tiny ${dueClass(t)}">${t.due_date ? day(t.due_date) : ""}</span></div>`; }).join("")}</div></div>`).join("");
+  return head("My Work", `Task yang ditugaskan ke ${esc(me)} di semua project`, ctl) +
+    (list.length ? `<div class="stack">${body}</div>` : `<div class="card">${emptyState("check", "Tidak ada task untukmu", `Tugaskan task ke "${me}" dari board atau isi kolom Orang di detail task.`)}</div>`);
+}
+
+function projectsPage() {
+  const ws = S.ws;
+  if (!ws) return head("Projects", "Memuat…");
+  const q = (S.filters.prq || "").toLowerCase(), list = ws.projects.filter((p) => p.lifecycle !== "archived" && (!q || `${p.name} ${p.key}`.toLowerCase().includes(q)));
+  const side = `<div class="ppane"><div class="row" style="gap:8px"><input type="search" id="prq" placeholder="Cari project…" value="${esc(S.filters.prq || "")}" style="flex:1"><button class="btn icon-btn" data-act="newProject" title="Project baru">${icon("plus")}</button></div>
+    <div class="plist">${list.map((p) => `<a href="#/project/${esc(p.id)}" class="${p.id === S.arg ? "on" : ""}"><span class="dot ${p.paused ? "" : p.lifecycle === "live" ? "ok" : "info"}"></span><div style="min-width:0"><div class="small ellipsis" style="font-weight:600">${esc(p.name)}</div><div class="tiny muted">${esc(p.key)} · ${esc(lcTitle(p.lifecycle))}</div></div></a>`).join("")}</div></div>`;
+  const main = S.arg && ws.projects.some((p) => p.id === S.arg) ? project()
+    : `<div class="pempty">${emptyState("folderPlus", "Belum ada project", "Project menyatukan repo, server, domain, deployment dan task dalam satu konteks.", ["Project baru", "newProject"], ["Temukan project", "discover"])}</div>`;
+  return `<div class="projects">${side}<div class="pmain">${main}</div></div>`;
+}
+
+const ACT_KINDS = [["all", "Semua"], ["task", "Task"], ["code", "Kode"], ["ci", "CI & deploy"], ["ops", "Operasional"], ["agent", "Agent"]];
+const actKind = (a) => { const s = `${a.type} ${a.source}`.toLowerCase();
+  return /agent|hermes/.test(s) ? "agent" : /ci|deploy|vercel|release|workflow/.test(s) ? "ci" : /git|commit|push|pr\b|pull/.test(s) ? "code" : /monitor|incident|server|site|down|backup/.test(s) ? "ops" : "task"; };
+function activity() {
+  const ws = S.ws;
+  if (!ws) return head("Activity", "Memuat…");
+  const f = S.filters, kind = f.akind || "all", days = f.adays || 30, pid = f.aproj || "";
+  const list = ws.activity.filter((a) => a.ts > Date.now() / 1000 - days * 86400 && (kind === "all" || actKind(a) === kind) && (!pid || a.project_id === pid));
+  const ctl = `<div class="row wrap ctlrow"><div class="seg">${ACT_KINDS.map(([v, t]) => `<button class="${kind === v ? "on" : ""}" data-act="akind" data-v="${v}">${t}</button>`).join("")}</div>
+    <select id="adays">${[[7, "7 hari"], [30, "30 hari"], [90, "90 hari"]].map(([v, t]) => `<option value="${v}" ${days === v ? "selected" : ""}>${t}</option>`).join("")}</select>
+    <select id="aproj"><option value="">Semua project</option>${ws.projects.map((p) => `<option value="${esc(p.id)}" ${p.id === pid ? "selected" : ""}>${esc(p.name)}</option>`).join("")}</select></div>
+    <div class="row" style="margin:-4px 0 14px;gap:10px"><span class="small muted">${list.length} kejadian</span><button class="btn" data-act="wsSync">${icon("sync")} Sinkron</button></div>`;
+  const rows = list.map((a) => `<div class="item"><span class="dot ${a.type.includes("completed") ? "ok" : /down|failed/.test(a.type) ? "bad" : "info"}"></span>
+    <div class="ellipsis" style="flex:1"><span class="small">${esc(a.title)}</span><div class="tiny muted">${esc(a.project_name || "")} · ${esc(a.source)}</div></div><span class="small muted">${ago(a.ts)}</span></div>`).join("");
+  return head("Activity", "Semua kejadian dari task, GitHub, CI/deploy, Monitor dan agent, berurutan") + ctl +
+    `<div class="card">${rows ? `<div class="list">${rows}</div>` : emptyState("history", "Belum ada aktivitas", "Aktivitas muncul saat task berubah, dan dari repo/Vercel/aplikasi yang ditautkan ke project.")}</div>`;
+}
+
+// ── Overview ──
 function backupCard() {
   const b = S.state.backups || [];
   if (!b.length) return "";
@@ -933,26 +1044,6 @@ function filesPage() {
 
 // ── Workspace: portfolio ──
 const lcTitle = (v) => (LIFECYCLES.find((x) => x[0] === v) || [v, v])[1];
-function portfolio() {
-  const ws = S.ws;
-  if (!ws) return head("Portfolio", "Memuat…");
-  const f = S.filters, pf = f.pf || "", lc = f.lc || "";
-  const list = ws.projects.filter((p) => (!pf || p.portfolio_id === pf) && (lc ? p.lifecycle === lc : p.lifecycle !== "archived"));
-  const pfs = ws.portfolios.filter((p) => !p.archived);
-  const pfSel = `<select id="pfSel"><option value="">Semua portfolio</option>${pfs.map((p) => `<option value="${esc(p.id)}" ${p.id === pf ? "selected" : ""}>${esc(p.name)}</option>`).join("")}</select>`;
-  const lcSel = `<select id="lcSel"><option value="">Semua (tanpa arsip)</option>${LIFECYCLES.map(([v, t]) => `<option value="${v}" ${v === lc ? "selected" : ""}>${t}</option>`).join("")}</select>`;
-  const cards = list.map((p) => {
-    const port = ws.portfolios.find((x) => x.id === p.portfolio_id);
-    const prog = p.progress == null ? `<span class="small muted">Belum terukur</span>` : `<div class="row"><div class="meter ok" style="flex:1"><i style="width:${Math.round(p.progress * 100)}%"></i></div><span class="small mono">${pct(p.progress)}</span></div>`;
-    return `<a class="card pcard" href="#/project/${esc(p.id)}" style="color:inherit;text-decoration:none">
-      <div class="row"><span class="chip v mono">${esc(p.key)}</span><span class="chip">${esc(lcTitle(p.lifecycle))}</span>${p.paused ? '<span class="chip warn">paused</span>' : ""}<span class="spacer"></span>${p.priority >= 3 ? `<span class="prio p${p.priority}">${PRIO[p.priority]}</span>` : ""}</div>
-      <div><h3>${esc(p.name)}</h3><div class="small muted ellipsis">${esc(p.description || (port ? port.name : ""))}</div></div>${prog}
-      <div class="small muted">${p.open_tasks} task terbuka${p.blocked_tasks ? ` · <span class="red">${p.blocked_tasks} terblokir</span>` : ""}${p.overdue_tasks ? ` · <span class="red">${p.overdue_tasks} lewat tenggat</span>` : ""}${p.target_date ? ` · target ${day(p.target_date)}` : ""}</div></a>`;
-  }).join("");
-  return head("Portfolio", `${ws.projects.filter((p) => p.lifecycle !== "archived").length} project · ${pfs.length} portfolio`,
-    `${pfSel}${lcSel}<button class="btn" data-act="newPortfolio">+ Portfolio</button><button class="btn primary" data-act="newProject">+ Project</button>`) +
-    (cards ? `<div class="grid g3">${cards}</div>` : `<div class="card empty"><b>${ws.projects.length ? "Tidak ada project di filter ini" : "Belum ada project"}</b>Buat project pertama — task, board dan progress mengikuti.</div>`);
-}
 
 // ── Workspace: project board ──
 function project() {
@@ -1021,29 +1112,6 @@ function cardAfter(col, y) {
 }
 
 // ── Workspace: tasks & activity ──
-function tasks() {
-  const ws = S.ws;
-  if (!ws) return head("My Work", "Memuat…");
-  const f = S.filters, mine = f.assignee || "";
-  const proj = Object.fromEntries(ws.projects.map((p) => [p.id, p]));
-  const list = ws.tasks.filter((t) => !t.archived && !t.parent_id && t.status !== "done" && proj[t.project_id] && proj[t.project_id].lifecycle !== "archived" && !proj[t.project_id].paused
-    && (!mine || t.assignee === mine)).sort((a, b) => (a.due_date || 9e12) - (b.due_date || 9e12) || b.priority - a.priority);
-  const people = [...new Set(ws.tasks.map((t) => t.assignee).filter(Boolean))].sort();
-  const sel = `<select id="assigneeSel"><option value="">Semua orang</option>${people.map((a) => `<option ${a === mine ? "selected" : ""}>${esc(a)}</option>`).join("")}</select>`;
-  const rows = list.map((t) => { const p = proj[t.project_id]; return `<tr class="click" data-act="task" data-v="${esc(t.id)}"><td class="mono small">${esc(p.key)}-${t.number}</td>
-    <td><b>${esc(t.title)}</b>${t.blocked ? ' <span class="chip bad">terblokir</span>' : ""}<div class="tiny muted">${esc(p.name)}</div></td>
-    <td class="small">${esc((STATUSES.find((s) => s[0] === t.status) || [])[1])}</td><td class="small">${t.priority ? `<span class="prio p${t.priority}">${PRIO[t.priority]}</span>` : "–"}</td>
-    <td class="small">${esc(t.assignee || "–")}</td><td class="small ${dueClass(t)}">${t.due_date ? day(t.due_date) : "–"}</td></tr>`; }).join("");
-  return head("My Work", `${list.length} task terbuka di project aktif`, sel) +
-    `<div class="card scroll-x">${rows ? `<table class="tbl"><tr><th>#</th><th>Task</th><th>Status</th><th>Prioritas</th><th>PIC</th><th>Tenggat</th></tr>${rows}</table>` : `<div class="empty"><b>Tidak ada task terbuka</b></div>`}</div>`;
-}
-function activity() {
-  const ws = S.ws;
-  if (!ws) return head("Activity", "Memuat…");
-  const rows = ws.activity.map((a) => `<div class="item"><span class="dot ${a.type.includes("completed") ? "ok" : a.type.includes("down") || a.type.includes("failed") ? "bad" : "info"}"></span>
-    <div class="ellipsis" style="flex:1">${esc(a.title)}<div class="tiny muted">${esc(a.project_name || "")} · ${esc(a.source)}</div></div><span class="small muted">${ago(a.ts)}</span></div>`).join("");
-  return head("Activity", "Kejadian terbaru di workspace") + `<div class="card">${rows ? `<div class="list">${rows}</div>` : `<div class="empty"><b>Belum ada aktivitas</b></div>`}</div>`;
-}
 
 // ── Dialogs ──
 function openDialog(html, onSubmit) {
@@ -1146,6 +1214,11 @@ document.addEventListener("click", (e) => {
   else if (act === "job") { S.filters["job:" + v] = !S.filters["job:" + v]; render(); }
   else if (act === "view") { S.filters.view = v; render(); }
   else if (act === "newProject") projectDialog(null);
+  else if (act === "discover") toast("Penemuan project (dari ~/Projects, GitHub, Vercel dan Monitor) berjalan di app Mac; hasilnya tersinkron ke sini.");
+  else if (act === "pview") { S.filters.pview = v; render(); }
+  else if (act === "akind") { S.filters.akind = v; render(); }
+  else if (act === "openProject") location.hash = `#/project/${v}`;
+  else if (act === "wsSync") loadWs().then(() => { render(); toast("Workspace dimuat ulang"); });
   else if (act === "newPortfolio") portfolioDialog();
   else if (act === "editProject") projectDialog(S.ws.projects.find((p) => p.id === v));
   else if (act === "newTask") taskDialog(null, v);
@@ -1165,8 +1238,17 @@ document.addEventListener("toggle", (e) => { const id = e.target.dataset && e.ta
 document.addEventListener("keydown", (e) => {
   if ((e.key === "Enter" || e.key === " ") && e.target.matches(".cf-map-country")) { e.preventDefault(); S.filters.cfCountry = e.target.dataset.v; render(); }
 });
-document.addEventListener("input", (e) => { if (e.target.id === "jobq") { S.filters.jobq = e.target.value; render(); } });
+document.addEventListener("input", (e) => {
+  if (e.target.id === "jobq") { S.filters.jobq = e.target.value; render(); }
+  if (e.target.id === "pq" || e.target.id === "prq") { S.filters[e.target.id] = e.target.value; render(); }
+  if (e.target.id === "meName") { try { localStorage.setItem("raphaelMe", e.target.value.trim() || "Saya"); } catch { /* ignore */ } render(); }
+});
 document.addEventListener("change", (e) => {
+  if (e.target.dataset.act === "pfav") { S.filters.pfav = e.target.checked; render(); }
+  if (e.target.dataset.act === "ppaused") { S.filters.ppaused = e.target.checked; render(); }
+  if (e.target.dataset.act === "unassigned") { S.filters.unassigned = e.target.checked; render(); }
+  if (e.target.id === "adays") { S.filters.adays = Number(e.target.value); render(); }
+  if (e.target.id === "aproj") { S.filters.aproj = e.target.value; render(); }
   if (e.target.id === "cf-zone-filter") { S.filters.cfZone = e.target.value; S.filters.cfCountry = ""; render(); }
   if (e.target.id === "pfSel") { S.filters.pf = e.target.value; render(); }
   if (e.target.id === "lcSel") { S.filters.lc = e.target.value; render(); }
@@ -1203,12 +1285,11 @@ function route() {
   let [r, arg] = location.hash.replace(/^#\/?/, "").split("/");
   const old = { incidents: "incidents", notify: "notify", jobs: "jobs", traffic: "traffic" };   // earlier web routes → Monitor tabs
   if (old[r]) { location.replace(`#/monitor/${old[r]}`); return; }
-  if (r === "projects") {                                   // like the Mac app: the board of the last (or first active) project
+  if (r === "projects" && !arg) {                           // like the Mac app: the board of the last (or first active) project
     const ps = S.ws ? S.ws.projects.filter((p) => p.lifecycle !== "archived") : [];
     let last = ""; try { last = localStorage.getItem("raphaelLastProject") || ""; } catch { /* ignore */ }
     const p = ps.find((x) => x.id === last) || ps[0];
     if (p) { location.replace(`#/project/${p.id}`); return; }
-    r = "portfolio";
   }
   if (r === "project" && arg) { try { localStorage.setItem("raphaelLastProject", decodeURIComponent(arg)); } catch { /* ignore */ } }
   S.route = r || "overview"; S.arg = decodeURIComponent(arg || "");
