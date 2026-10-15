@@ -206,7 +206,8 @@ pub fn omniroute_load(base: &str, key: &str) -> Result<Value, OmniError> {
     let conns: Vec<Value> = providers.get("connections").and_then(|c| c.as_array()).cloned().unwrap_or_default();
     let mut out = json!({"connections": conns.iter().map(|c| json!({"name": c.get("name").and_then(|v| v.as_str()).unwrap_or("?"),
         "provider": c.get("provider").and_then(|v| v.as_str()).unwrap_or("?"), "active": c.get("isActive").and_then(|v| v.as_bool()).unwrap_or(false),
-        "testStatus": c.get("testStatus").and_then(|v| v.as_str()).unwrap_or(""), "lastError": c.get("lastError").cloned().unwrap_or(Value::Null)})).collect::<Vec<_>>()});
+        "testStatus": c.get("testStatus").and_then(|v| v.as_str()).unwrap_or(""), "lastError": c.get("lastError").cloned().unwrap_or(Value::Null),
+        "id": c.get("id").cloned().unwrap_or(Value::Null), "priority": c.get("priority").cloned().unwrap_or(Value::Null)})).collect::<Vec<_>>()});
     let o = out.as_object_mut().unwrap();
     let m = safe("/api/providers/health-matrix");
     let sm = m.get("summary").cloned().unwrap_or(json!({}));
@@ -221,7 +222,11 @@ pub fn omniroute_load(base: &str, key: &str) -> Result<Value, OmniError> {
     o.insert("degraded".into(), json!(n(&sm, "degradedCount") as i64));
     o.insert("down".into(), json!(n(&sm, "downCount") as i64));
     o.insert("models".into(), json!(n(&sm, "modelCount") as i64));
-    let met = safe("/api/provider-metrics").get("metrics").and_then(|m| m.as_object()).cloned().unwrap_or_default();
+    let pm = safe("/api/provider-metrics");
+    let topo = pm.get("topology").cloned().unwrap_or(json!({}));
+    o.insert("lastProvider".into(), topo.get("lastProvider").cloned().unwrap_or(Value::Null));
+    o.insert("errorProvider".into(), topo.get("errorProvider").cloned().unwrap_or(Value::Null));
+    let met = pm.get("metrics").and_then(|m| m.as_object()).cloned().unwrap_or_default();
     let mut metrics: Vec<Value> = met.iter().filter(|(_, v)| v.is_object()).map(|(k, v)| {
         let sr = n(v, "successRate");
         let state = states.get(k).and_then(|s| s.as_str()).map(String::from).unwrap_or_else(|| (if sr >= 90.0 { "healthy" } else if sr >= 70.0 { "degraded" } else { "down" }).into());
@@ -235,14 +240,22 @@ pub fn omniroute_load(base: &str, key: &str) -> Result<Value, OmniError> {
     o.insert("usage".into(), json!({"requests": n(&s, "totalRequests") as i64, "tokens": n(&s, "totalTokens") as i64, "cost": n(&s, "totalCost"),
         "successRate": s.get("successRatePct"), "latency": s.get("avgLatencyMs"), "since": s.get("firstRequest")}));
     let days: Vec<Value> = a.get("dailyTrend").and_then(|d| d.as_array()).cloned().unwrap_or_default().iter()
-        .map(|d| json!({"date": d.get("date"), "requests": n(d, "requests") as i64, "tokens": n(d, "totalTokens") as i64})).collect();
-    let skip = days.len().saturating_sub(14);
+        .map(|d| json!({"date": d.get("date"), "requests": n(d, "requests") as i64, "tokens": n(d, "totalTokens") as i64, "cost": n(d, "cost")})).collect();
+    let skip = days.len().saturating_sub(30);
     o.insert("days".into(), json!(days[skip..]));
     let mut by_model: Vec<Value> = a.get("byModel").and_then(|d| d.as_array()).cloned().unwrap_or_default().iter()
-        .map(|r| json!({"name": r.get("model"), "provider": r.get("provider"), "requests": n(r, "requests") as i64, "tokens": n(r, "totalTokens") as i64})).collect();
+        .map(|r| json!({"name": r.get("model"), "provider": r.get("provider"), "requests": n(r, "requests") as i64, "tokens": n(r, "totalTokens") as i64, "cost": n(r, "cost")})).collect();
     by_model.sort_by_key(|r| -r["tokens"].as_i64().unwrap_or(0));
     by_model.truncate(10);
     o.insert("byModel".into(), json!(by_model));
+    // Cost and tokens per provider and per account, as the Mac app shows them.
+    for (key, field, out_key) in [("byProvider", "provider", "byProvider"), ("byAccount", "account", "byAccount")] {
+        let mut rows: Vec<Value> = a.get(key).and_then(|d| d.as_array()).cloned().unwrap_or_default().iter()
+            .map(|r| json!({"name": r.get(field), "requests": n(r, "requests") as i64, "tokens": n(r, "totalTokens") as i64, "cost": n(r, "cost")})).collect();
+        rows.sort_by(|a, b| b["cost"].as_f64().unwrap_or(0.0).total_cmp(&a["cost"].as_f64().unwrap_or(0.0)).then(b["tokens"].as_i64().cmp(&a["tokens"].as_i64())));
+        rows.truncate(10);
+        o.insert(out_key.into(), json!(rows));
+    }
     let lim = safe("/api/usage/provider-limits").get("caches").and_then(|c| c.as_object()).cloned().unwrap_or_default();
     let mut quotas = vec![];
     for (cid, v) in lim.iter().filter(|(_, v)| v.is_object()) {
@@ -254,7 +267,8 @@ pub fn omniroute_load(base: &str, key: &str) -> Result<Value, OmniError> {
         ws.sort_by(|a, b| a["remaining"].as_f64().partial_cmp(&b["remaining"].as_f64()).unwrap_or(std::cmp::Ordering::Equal));
         let c = conns.iter().find(|c| c.get("id").and_then(|i| i.as_str()) == Some(cid.as_str()));
         quotas.push(json!({"account": c.and_then(|c| c.get("name")).and_then(|v| v.as_str()).map(String::from).unwrap_or_else(|| cid.chars().take(8).collect()),
-                           "provider": c.and_then(|c| c.get("provider")).and_then(|v| v.as_str()).unwrap_or("?"), "plan": v.get("plan"), "windows": ws}));
+                           "provider": c.and_then(|c| c.get("provider")).and_then(|v| v.as_str()).unwrap_or("?"), "plan": v.get("plan"), "windows": ws,
+                           "id": cid, "message": v.get("message")}));
     }
     quotas.sort_by_key(|q| (q["windows"].as_array().map(|w| w.is_empty()).unwrap_or(true), q["provider"].as_str().unwrap_or("").to_string(), q["account"].as_str().unwrap_or("").to_string()));
     o.insert("quotas".into(), json!(quotas));

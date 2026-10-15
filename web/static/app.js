@@ -970,39 +970,70 @@ async function loadOmni(force) {
   try { S.omni = { ...(await api("GET", "/api/omniroute")), fetched: Date.now() }; } catch (e) { S.omni = { state: "error", error: e.message, fetched: Date.now() }; }
   if (S.route === "omniroute") $("#main").innerHTML = omniroute();
 }
+// ── OmniRoute, laid out like the Mac app (OmniRouteView + TopologyView) ──
+const usd = (v) => (v == null ? "–" : v >= 100 ? `$${Math.round(v)}` : `$${Number(v).toFixed(2)}`);
+const stColor = (s) => ({ healthy: "var(--mint)", degraded: "var(--amber)", down: "var(--red)" }[s] || "var(--line)");
+function omniLabel(o, prov) {
+  if (prov && prov.startsWith("openai-compatible")) { const c = (o.connections || []).find((x) => x.provider === prov); if (c) return c.name; }
+  return prov || "?";
+}
+function topology(o) {
+  const provs = (o.metrics || []).map((m) => m.provider);
+  for (const c of o.connections || []) if (!provs.includes(c.provider)) provs.push(c.provider);
+  const rowH = 54, H = Math.max(provs.length * rowH, 200);
+  const clients = [["Raphael", "Hermes agent", "sparkles", false], ["Raphael.app", "quick chat", "grid", true], ["Cron & gateway", "WhatsApp · webui", "history", true]];
+  const cy = (i) => H / 2 + (i - 1) * 64;
+  // x in per-mille of the width (the SVG uses viewBox 0..1000 stretched to the card); boxes use the same numbers as %.
+  const C1 = 180, HUB_L = 250, HUB_R = 430, P = 520;
+  let paths = clients.map(([, , , dashed], i) => `<path d="M${C1},${cy(i)} C${C1 + 40},${cy(i)} ${HUB_L - 60},${H / 2} ${HUB_L},${H / 2}" stroke="var(--violet)" stroke-opacity=".45" stroke-width="2" ${dashed ? 'stroke-dasharray="4 4"' : ""} fill="none" vector-effect="non-scaling-stroke"/>`).join("");
+  paths += provs.map((p, i) => { const y = i * rowH + rowH / 2, m = (o.metrics || []).find((x) => x.provider === p);
+    const w = m ? Math.max(1.2, Math.min(5, Math.log10(Math.max(m.requests, 1)) * 1.4)) : 1;
+    return `<path d="M${HUB_R},${H / 2} C${HUB_R + 60},${H / 2} ${P - 60},${y} ${P},${y}" stroke="${stColor(m ? m.state : "")}" stroke-opacity="${p === o.lastProvider ? 0.95 : 0.5}" stroke-width="${w}" fill="none" vector-effect="non-scaling-stroke"/>`; }).join("");
+  const boxes = clients.map(([t, sub, ic], i) => `<div class="tnode" style="left:1%;width:17%;top:${cy(i) - 22}px"><span class="ico">${icon(ic)}</span><div><b>${t}</b><div class="tiny muted">${sub}</div></div></div>`).join("");
+  const hub = `<div class="thub" style="left:${HUB_L / 10}%;width:${(HUB_R - HUB_L) / 10}%;top:${H / 2 - 50}px">${icon("route")}<b>OmniRoute</b><span class="mono">${esc((o.base || "").replace(/^https?:\/\//, ""))}</span><span>${num(o.models)} model</span></div>`;
+  const rows = provs.map((p, i) => { const m = (o.metrics || []).find((x) => x.provider === p), conns = (o.connections || []).filter((c) => c.provider === p);
+    return `<div class="tprov ${p === o.lastProvider ? "last" : ""}" style="left:${P / 10}%;right:0;top:${i * rowH + 4}px;height:${rowH - 8}px"><span class="dot" style="background:${stColor(m ? m.state : "")}"></span>
+      <div style="min-width:0;flex:1"><b class="ellipsis">${esc(omniLabel(o, p))}</b><div class="row" style="gap:4px">${conns.slice(0, 3).map((c) => `<span class="acct ${c.active ? "" : "off"}">${esc(c.name.length > 18 ? c.name.slice(0, 16) + "…" : c.name)}</span>`).join("")}${conns.length > 3 ? `<span class="tiny muted">+${conns.length - 3}</span>` : ""}</div></div>
+      ${m ? `<div class="tstat"><span class="mono">${compact(m.requests)} req · ${Math.round(m.successRate)}%</span><span class="tiny muted">${Math.round((m.latency || 0) / 1000)}s · ${m.lastAt ? ago(Date.parse(m.lastAt) / 1000) : "-"}</span></div>` : '<span class="tiny muted">belum ada request</span>'}</div>`; }).join("");
+  return `<div class="topo" style="height:${H}px"><svg viewBox="0 0 1000 ${H}" preserveAspectRatio="none">${paths}</svg>${boxes}${hub}${rows}</div>`;
+}
 function omniroute() {
   const o = S.omni;
-  if (!o) return head("OmniRoute", "Memuat…");
-  const open = o.dashboard ? `<a class="btn" href="${esc(o.dashboard)}" target="_blank" rel="noopener noreferrer">↗ Buka dashboard</a>` : "";
-  const actions = open + `<button class="btn" data-act="omniReload">↻ Refresh</button>`;
+  const actions = (o && o.dashboard ? `<a class="btn primary" href="${esc(o.dashboard)}" target="_blank" rel="noopener noreferrer">${icon("link")} Buka dashboard</a>` : "") + `<button class="btn" data-act="omniReload">↻ Refresh</button>`;
+  const title = (sub) => head("OmniRoute", sub || "Router LLM Raphael: topology provider, quota akun, dan biaya", actions);
+  if (!o) return title("Memuat…");
   if (o.state !== "ok") {
     const msg = { noKey: "Belum ada API key OmniRoute di server ini.", denied: "API key OmniRoute ditolak.", idle: "Memuat…", error: "OmniRoute tidak terjangkau." }[o.state] || o.state;
-    return head("OmniRoute", esc(o.base || ""), actions) + `<div class="card"><p><b>${esc(msg)}</b></p>
+    return title() + `<div class="card"><p class="red" style="margin-top:0">${esc(msg)}</p><div class="mono small muted">${esc(o.base || "")}</div>
       ${(o.tried || []).map((t) => `<div class="small mono muted">• ${esc(t.source)}: ${esc(t.result)}</div>`).join("")}
       <p class="small muted">Server membaca key dari <span class="mono">OMNIROUTE_API_KEY</span> (atau key OmniRoute milik Hermes) di <span class="mono">~/.hermes/.env</span>. Key tidak pernah dikirim ke browser.</p></div>`;
   }
-  const st = (x) => (x === "healthy" ? "ok" : x === "degraded" ? "warn" : x === "down" ? "bad" : "");
-  const u = o.usage || {};
-  const kpi = (v, l, n = "", cls = "") => `<div class="card kpi"><div class="v ${cls}">${v}</div><div class="l">${esc(l)}</div><div class="n">${n}</div></div>`;
-  const metrics = (o.metrics || []).map((m) => `<div class="item"><span class="dot ${st(m.state)}"></span><div class="ellipsis" style="flex:1"><b>${esc(m.provider)}</b>
-      <div class="tiny muted">${num(m.requests)} request · ${m.latency ? m.latency + " ms" : "–"}${m.lastAt ? " · terakhir " + esc(dt(Date.parse(m.lastAt) / 1000)) : ""}</div></div>
-      <span class="small mono">${m.successRate != null ? Number(m.successRate).toFixed(0) + "%" : "–"}</span></div>`).join("");
-  const conns = (o.connections || []).map((c) => `<div class="item"><span class="dot ${c.active ? (c.lastError ? "warn" : "ok") : ""}"></span><div class="ellipsis" style="flex:1"><b>${esc(c.name)}</b>
-      <div class="tiny ${c.lastError ? "amber" : "muted"} ellipsis">${esc(c.provider)}${c.lastError ? " · " + esc(c.lastError) : ""}</div></div><span class="chip ${c.active ? "ok" : ""}">${c.active ? "aktif" : "nonaktif"}</span></div>`).join("");
-  const quotas = (o.quotas || []).filter((q) => q.windows.length).map((q) => `<div class="item" style="align-items:flex-start"><div style="flex:1;min-width:0"><b>${esc(q.account)}</b> <span class="tiny muted">${esc(q.provider)}${q.plan ? " · " + esc(q.plan) : ""}</span>
-      ${q.windows.map((w) => `<div class="row small" style="margin-top:4px"><span class="ellipsis" style="width:140px;flex:none">${esc(w.label)}</span>
-        <div class="meter ${w.remaining < 10 ? "bad" : w.remaining < 30 ? "warn" : "ok"}" style="flex:1"><i style="width:${Math.max(2, w.remaining)}%"></i></div><span class="mono tiny" style="width:44px;text-align:right">${Math.round(w.remaining)}%</span></div>`).join("")}</div></div>`).join("");
-  return head("OmniRoute", `Gateway AI di ${esc(o.base)} · diperbarui ${ago(o.at)}`, actions) +
-    `<div class="grid g4" style="margin-bottom:16px">
-      ${kpi(`${o.healthy}/${o.healthy + o.degraded + o.down}`, "Provider sehat", `${o.degraded} turun performa · ${o.down} down`, o.down ? "red" : "")}
-      ${kpi(num(u.requests), "Request", u.since ? "sejak " + esc(day(Date.parse(u.since) / 1000)) : "")}
-      ${kpi(fmtTok(u.tokens || 0), "Token", u.cost ? "$" + Number(u.cost).toFixed(2) : "")}
-      ${kpi(u.successRate != null ? Number(u.successRate).toFixed(1) + "%" : "–", "Sukses", u.latency ? Math.round(u.latency) + " ms rata-rata" : "")}
-    </div>
-    ${(o.days || []).length ? `<div class="card" style="margin-bottom:16px"><h2>Request per hari</h2>${barsChart(o.days, "requests", "var(--blue)")}</div>` : ""}
-    <div class="grid g2"><div class="card"><h2>Provider</h2><div class="list">${metrics || '<div class="muted small">–</div>'}</div></div>
-      <div class="stack">${quotas ? `<div class="card"><h2>Sisa kuota</h2><div class="list">${quotas}</div></div>` : ""}
-      <div class="card"><h2>Koneksi</h2><div class="list">${conns || '<div class="muted small">–</div>'}</div></div></div></div>`;
+  const u = o.usage || {}, days = o.days || [], wk = days.slice(-7), sum = (l, k) => l.reduce((a, d) => a + (d[k] || 0), 0);
+  const total = o.healthy + o.degraded + o.down, lat = u.latency || 0;
+  const stat = (l, v, n, tone) => `<div class="card stat"><div class="lbl">${l}</div><div class="v" ${tone ? `style="color:${tone}"` : ""}>${v}</div>${n ? `<div class="n">${n}</div>` : ""}</div>`;
+  const range = S.filters.costRange || 14, cd = days.slice(-range), hi = Math.max(0.0001, ...cd.map((d) => d.cost || 0));
+  const costChart = `<svg class="chart" viewBox="0 0 700 200" preserveAspectRatio="none"><defs><linearGradient id="cg" x1="0" x2="1"><stop offset="0" stop-color="var(--violet)"/><stop offset="1" stop-color="var(--orchid)"/></linearGradient></defs>${cd.map((d, i) => { const bw = 700 / cd.length, bh = ((d.cost || 0) / hi) * 170;
+    return `<rect x="${i * bw + 4}" y="${182 - bh}" width="${Math.max(2, bw - 8)}" height="${bh}" rx="4" fill="url(#cg)"><title>${esc(d.date)}: ${usd(d.cost)}</title></rect><text x="${i * bw + bw / 2}" y="198" text-anchor="middle" font-size="10" fill="var(--muted)">${esc((d.date || "").slice(5))}</text>`; }).join("")}</svg>`;
+  const gauge = (rows) => { const mc = Math.max(0.0001, ...rows.map((r) => r.cost || 0)), mt = Math.max(1, ...rows.map((r) => r.tokens || 0));
+    return rows.slice(0, 8).map((r, i) => `<div style="margin:6px 0"><div class="row small"><span class="ellipsis">${esc(omniLabel(o, r.name))}</span><span class="spacer"></span><span class="mono tiny muted">${compact(r.tokens)}</span><b class="mono" style="width:60px;text-align:right">${usd(r.cost)}</b></div>
+      <div class="mbar" style="height:4px"><i style="width:${Math.round(((r.cost || 0) > 0 ? r.cost / mc : (r.tokens || 0) / mt) * 100)}%;background:${SERIES[i % SERIES.length]}"></i></div></div>`).join("") || '<div class="small muted">–</div>'; };
+  const quotas = (o.quotas || []).map((q) => { const c = (o.connections || []).find((x) => x.id === q.id);
+    return `<div class="qcard"><div class="row"><b>${esc(omniLabel(o, q.provider))}</b>${q.plan ? `<span class="chip v">${esc(q.plan)}</span>` : ""}<span class="spacer"></span>${c ? `<span class="chip ${c.active && c.testStatus === "active" ? "ok" : "bad"}">${esc(c.active ? c.testStatus || "aktif" : "nonaktif")}</span>` : ""}</div>
+      <div class="tiny muted ellipsis">${esc(q.account)}</div>${q.windows.length ? q.windows.map((w) => `<div style="margin-top:6px"><div class="row tiny"><span>${esc(w.label)}</span><span class="spacer"></span><span class="mono">${Math.round(w.remaining)}% sisa</span>${w.resetAt ? `<span class="muted">· reset ${esc(dt(Date.parse(w.resetAt) / 1000))}</span>` : ""}</div><div class="mbar" style="height:5px"><i style="width:${Math.max(2, w.remaining)}%;background:${w.remaining < 10 ? "var(--red)" : w.remaining < 30 ? "var(--amber)" : "var(--green)"}"></i></div></div>`).join("") : `<div class="tiny muted" style="margin-top:6px">${esc(q.message || "Tidak ada data kuota")}</div>`}</div>`; }).join("");
+  const models = (o.byModel || []).slice(0, 10).map((m) => `<div class="row small" style="padding:4px 0"><b class="ellipsis" style="font-weight:550">${esc(m.name)}</b><span class="tiny muted">${esc(omniLabel(o, m.provider))}</span><span class="spacer"></span><span class="tiny muted">${num(m.requests)} req</span><span class="mono" style="width:64px;text-align:right">${compact(m.tokens)}</span><b class="mono" style="width:64px;text-align:right">${usd(m.cost)}</b></div>`).join("");
+  return title() + `<div class="stack"><div class="grid g6">
+      ${stat("Biaya total", usd(u.cost), u.since ? `sejak ${esc(day(Date.parse(u.since) / 1000))}` : "")}
+      ${stat("Biaya 7 hari", usd(sum(wk, "cost")), `hari ini ${usd((days[days.length - 1] || {}).cost)}`)}
+      ${stat("Token total", compact(u.tokens), `7 hari ${compact(sum(wk, "tokens"))}`)}
+      ${stat("Request", compact(u.requests), `sukses ${u.successRate != null ? Number(u.successRate).toFixed(1) : "–"}%`)}
+      ${stat("Latensi rata-rata", `${Math.round(lat / 1000)}s`, "", lat > 20000 ? "var(--amber)" : "")}
+      ${stat("Provider", `${o.healthy}/${total}`, `${o.degraded} degraded · ${o.down} down`, o.down ? "var(--red)" : "var(--green)")}</div>
+    <div class="card"><div class="row" style="margin-bottom:12px"><span class="lbl">Provider topology</span><span class="spacer"></span>${o.lastProvider ? `<span class="chip v">terakhir dipakai: ${esc(omniLabel(o, o.lastProvider))}</span>` : ""}${o.errorProvider ? `<span class="chip bad">error terakhir: ${esc(omniLabel(o, o.errorProvider))}</span>` : ""}</div>${topology(o)}</div>
+    ${quotas ? `<div class="card"><div class="lbl" style="margin-bottom:12px">Quota akun provider</div><div class="qgrid">${quotas}</div></div>` : ""}
+    <div class="sumgrid"><div class="card"><div class="row"><span class="lbl">Biaya per hari</span><span class="spacer"></span><div class="seg">${[7, 14, 30].map((v) => `<button class="${range === v ? "on" : ""}" data-act="costRange" data-v="${v}">${v}h</button>`).join("")}</div></div>${costChart}</div>
+      <div class="card"><div class="lbl">Biaya per provider</div>${gauge(o.byProvider || [])}</div></div>
+    <div class="sumgrid"><div class="card"><div class="lbl" style="margin-bottom:6px">Model terboros</div>${models || '<div class="small muted">–</div>'}</div>
+      <div class="card"><div class="lbl">Per akun</div>${gauge(o.byAccount || [])}</div></div></div>`;
 }
 
 // ── Files (read-only) ──
@@ -1215,6 +1246,7 @@ document.addEventListener("click", (e) => {
   else if (act === "view") { S.filters.view = v; render(); }
   else if (act === "newProject") projectDialog(null);
   else if (act === "discover") toast("Penemuan project (dari ~/Projects, GitHub, Vercel dan Monitor) berjalan di app Mac; hasilnya tersinkron ke sini.");
+  else if (act === "costRange") { S.filters.costRange = Number(v); render(); }
   else if (act === "pview") { S.filters.pview = v; render(); }
   else if (act === "akind") { S.filters.akind = v; render(); }
   else if (act === "openProject") location.hash = `#/project/${v}`;

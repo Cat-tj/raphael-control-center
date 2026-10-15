@@ -463,7 +463,8 @@ def omniroute_load(base: str, key: str) -> dict:
             raise RuntimeError(f"tidak terjangkau: {e.reason}")
     providers = get("/api/providers")
     out = {"connections": [{"name": c.get("name") or "?", "provider": c.get("provider") or "?", "active": bool(c.get("isActive")),
-                            "testStatus": c.get("testStatus") or "", "lastError": c.get("lastError")} for c in providers.get("connections") or []]}
+                            "testStatus": c.get("testStatus") or "", "lastError": c.get("lastError"), "id": c.get("id"), "priority": c.get("priority")}
+                           for c in providers.get("connections") or []]}
     def safe(path):
         try:
             return get(path)
@@ -473,7 +474,10 @@ def omniroute_load(base: str, key: str) -> dict:
     sm = m.get("summary") or {}
     out.update({"healthy": sm.get("healthyCount", 0), "degraded": sm.get("degradedCount", 0), "down": sm.get("downCount", 0),
                 "models": sm.get("modelCount", 0), "providerStates": {p.get("provider"): p.get("state") for p in m.get("providers") or []}})
-    met = safe("/api/provider-metrics").get("metrics") or {}
+    pm = safe("/api/provider-metrics")
+    topo = pm.get("topology") or {}
+    out.update(lastProvider=topo.get("lastProvider"), errorProvider=topo.get("errorProvider"))
+    met = pm.get("metrics") or {}
     out["metrics"] = sorted([{"provider": k, "requests": v.get("totalRequests", 0), "successRate": v.get("successRate", 0),
                               "latency": v.get("avgLatencyMs", 0), "lastAt": v.get("lastRequestAt"),
                               "state": out["providerStates"].get(k) or ("healthy" if (v.get("successRate") or 0) >= 90 else "degraded" if (v.get("successRate") or 0) >= 70 else "down")}
@@ -482,9 +486,12 @@ def omniroute_load(base: str, key: str) -> dict:
     s = a.get("summary") or {}
     out["usage"] = {"requests": s.get("totalRequests", 0), "tokens": s.get("totalTokens", 0), "cost": s.get("totalCost", 0),
                     "successRate": s.get("successRatePct"), "latency": s.get("avgLatencyMs"), "since": s.get("firstRequest")}
-    out["days"] = [{"date": d.get("date"), "requests": d.get("requests", 0), "tokens": d.get("totalTokens", 0)} for d in a.get("dailyTrend") or []][-14:]
-    out["byModel"] = sorted([{"name": r.get("model"), "provider": r.get("provider"), "requests": r.get("requests", 0), "tokens": r.get("totalTokens", 0)}
+    out["days"] = [{"date": d.get("date"), "requests": d.get("requests", 0), "tokens": d.get("totalTokens", 0), "cost": d.get("cost", 0)} for d in a.get("dailyTrend") or []][-30:]
+    out["byModel"] = sorted([{"name": r.get("model"), "provider": r.get("provider"), "requests": r.get("requests", 0), "tokens": r.get("totalTokens", 0), "cost": r.get("cost", 0)}
                              for r in a.get("byModel") or []], key=lambda r: -(r["tokens"] or 0))[:10]
+    for key, field in (("byProvider", "provider"), ("byAccount", "account")):
+        out[key] = sorted([{"name": r.get(field), "requests": r.get("requests", 0), "tokens": r.get("totalTokens", 0), "cost": r.get("cost", 0)}
+                           for r in a.get(key) or []], key=lambda r: (-(r["cost"] or 0), -(r["tokens"] or 0)))[:10]
     lim = safe("/api/usage/provider-limits").get("caches") or {}
     names = {c.get("id"): c for c in providers.get("connections") or []}
     quotas = []
@@ -501,7 +508,7 @@ def omniroute_load(base: str, key: str) -> dict:
             ws.append({"label": q.get("displayName") or label, "remaining": rem, "resetAt": q.get("resetAt")})
         c = names.get(cid) or {}
         quotas.append({"account": c.get("name") or cid[:8], "provider": c.get("provider") or "?", "plan": v.get("plan"),
-                       "windows": sorted(ws, key=lambda w: w["remaining"])})
+                       "windows": sorted(ws, key=lambda w: w["remaining"]), "id": cid, "message": v.get("message")})
     out["quotas"] = sorted(quotas, key=lambda q: (not q["windows"], q["provider"], q["account"]))
     return out
 
