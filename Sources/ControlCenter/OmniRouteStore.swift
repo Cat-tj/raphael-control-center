@@ -111,6 +111,8 @@ final class OmniRouteStore: ObservableObject {
     @Published var snapshots: [String: ORSnapshot] = [:]
     @Published var loading: Set<String> = []
     @Published var selected: String = "local"
+    /// Set once the user picks an instance; until then the view moves to one that answers.
+    private var userPicked = false
 
     static var configURL: URL { NodeStore.supportDir.appendingPathComponent("omniroute.json") }
 
@@ -134,6 +136,19 @@ final class OmniRouteStore: ObservableObject {
     }
 
     var current: ORSnapshot? { snapshots[selected] }
+
+    func pick(_ id: String) {
+        userPicked = true
+        selected = id
+    }
+
+    /// Don't open on a dead instance (e.g. the Mac's backup OmniRoute): prefer the primary
+    /// Hermes device's, else the first that answers.
+    private func autoPick() {
+        guard !userPicked, snapshots[selected]?.reachable != true else { return }
+        let live = instances.filter { snapshots[$0.id]?.reachable == true }
+        if let best = live.first(where: { $0.id == DeviceContext.primaryHermesId }) ?? live.first { selected = best.id }
+    }
 
     /// Adds every device that runs OmniRoute (capability probe), not only the one being viewed.
     func discover() {
@@ -207,6 +222,7 @@ final class OmniRouteStore: ObservableObject {
             }
             snapshots[inst.id] = snap
             loading.remove(inst.id)
+            autoPick()
         }
     }
 

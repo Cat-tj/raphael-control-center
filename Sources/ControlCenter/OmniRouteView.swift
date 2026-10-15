@@ -60,7 +60,7 @@ struct OmniRoutePage: View {
                 let snap = store.snapshots[inst.id], on = inst.id == store.selected
                 let color = store.loading.contains(inst.id) && snap == nil ? RTheme.muted
                     : snap?.reachable == true ? (snap!.down > 0 ? RTheme.amber : RTheme.mint) : RTheme.red
-                Button { store.selected = inst.id } label: {
+                Button { store.pick(inst.id) } label: {
                     HStack(spacing: 8) {
                         RStatusDot(color: color)
                         VStack(alignment: .leading, spacing: 1) {
