@@ -13,7 +13,7 @@ macro_rules! assets {
     };
 }
 
-assets!("index.html", "app.js", "app.css", "world-countries.json", "icon.svg", "icon-180.png", "icon-192.png", "icon-512.png", "manifest.webmanifest", "sw.js");
+assets!("index.html", "app.js", "app.css", "world-countries.json", "icon.svg", "logo.png", "icon-180.png", "icon-192.png", "icon-512.png", "manifest.webmanifest", "sw.js");
 
 const fn fnv(seed: u64, bytes: &[u8]) -> u64 {
     let mut h = seed;

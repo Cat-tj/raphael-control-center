@@ -32,8 +32,7 @@ const NAV = [
   ["Operations", [["monitor", "pulse", "Monitor"], ["servers", "server", "Infrastruktur"], ["websites", "apps", "Aplikasi & Website"], ["files", "folder", "File"]]],
   ["Intelligence", [["agents", "chart", "Agents & Token"], ["omniroute", "route", "OmniRoute"]]],
 ];
-// Monitor's tabs, like the Mac app's Monitor page.
-const MONITOR_TABS = [["incidents", "Ringkasan"], ["jobs", "Jobs"], ["traffic", "Traffic"], ["notify", "Notifikasi"]];
+
 
 // ── Formatting ──
 const pct = (v) => (v == null ? "–" : `${Math.round(v * 100)}%`);
@@ -141,7 +140,7 @@ function renderNav() {
   const om = S.state && S.state.omniroute;
   const badge = { websites: c.sitesDown, servers: c.nodesDown, omniroute: om && om.state === "ok" ? om.down : 0,
     monitor: (S.state ? (S.state.openIncidents || []).length : 0) + c.jobs };
-  const monitorOn = MONITOR_TABS.some(([r]) => r === S.route);
+  const monitorOn = S.route === "monitor";
   $("#nav").innerHTML = NAV.map(([g, items]) => `<div class="group">${esc(g)}</div>` + items.map(([id, ico, title]) => {
     const on = S.route === id || (id === "projects" && S.route === "project") || (id === "monitor" && monitorOn);
     const b = badge[id] ? `<span class="badge${id === "monitor" && !c.bad ? " warn" : ""}">${badge[id]}</span>` : "";
@@ -159,22 +158,155 @@ function render() {
   const main = $("#main");
   if (!S.state && !S.error) { main.innerHTML = `<div class="empty"><b>Memuat…</b></div>`; return; }
   if (S.error && !S.state) { main.innerHTML = `<div class="empty"><b>Server tidak menjawab</b>${esc(S.error)}</div>`; return; }
-  const pages = { overview, incidents, notify: notifyPage, servers, websites, jobs, traffic, files: filesPage, agents, omniroute, portfolio, project, tasks, activity };
+  const pages = { overview, monitor: monitorPage, servers: infra, websites: appsAndSites, files: filesPage, agents, omniroute, portfolio, project, tasks, activity };
   const keep = document.activeElement && document.activeElement.id ? document.activeElement.id : null;
   const scroll = window.scrollY;
-  const tabs = MONITOR_TABS.some(([r]) => r === S.route)
-    ? `<nav class="tabs" aria-label="Monitor">${MONITOR_TABS.map(([r, t]) => `<a href="#/${r}" class="${S.route === r ? "on" : ""}">${t}</a>`).join("")}</nav>` : "";
-  main.innerHTML = tabs + (pages[S.route] || overview)();
+  main.innerHTML = (pages[S.route] || overview)();
   if (keep && $("#" + CSS.escape(keep))) { const el = $("#" + CSS.escape(keep)); el.focus(); if (el.setSelectionRange && el.value) el.setSelectionRange(el.value.length, el.value.length); }
   window.scrollTo(0, scroll);
-  if (S.route === "servers") drawHistory();
+  const mtab = S.route === "monitor" ? (S.arg || "summary").split("|")[0] : "";
+  if (mtab === "servers") drawServerSparks();
   if (S.route === "project") wireBoard();
   if (S.route === "agents") loadAgents();
   if (S.route === "omniroute") loadOmni();
   if (S.route === "files") loadFiles();
-  if (S.route === "incidents") loadIncidents();
-  if (S.route === "notify") loadNotify();
-  if (S.route === "traffic") { loadWorldMap(); loadClarity(); }
+  if (mtab === "incidents") loadIncidents();
+  if (mtab === "notify") loadNotify();
+  if (mtab === "traffic") { loadWorldMap(); loadClarity(); }
+}
+
+// ── Operations pages, laid out like the Mac app (MonitorView, InfraViews, MonitorApps) ──
+const nodeLast = (n) => n.last || {};
+const nodeDown = (n) => !!(n.detail && n.detail.error);
+const pctTxt = (v) => (v == null ? "–" : `${Math.round(v * 100)}%`);
+const barColor = (v) => (v >= 0.9 ? "var(--red)" : v >= 0.7 ? "var(--amber)" : "var(--green)");
+const upTxt = (s) => { if (!s) return "–"; const d = Math.floor(s / 86400), h = Math.floor((s % 86400) / 3600), m = Math.floor((s % 3600) / 60); return d ? `${d}h ${h}j` : h ? `${h}j ${m}m` : `${m}m`; };
+const rate = (b) => (b == null ? "–" : b >= 1048576 ? `${(b / 1048576).toFixed(1)} MB/s` : b >= 1024 ? `${Math.round(b / 1024)} KB/s` : `${Math.round(b)} B/s`);
+function nodeApps(n) {
+  const d = n.detail || {}, out = [];
+  for (const c of d.containers || []) out.push({ kind: "container", name: c.name, group: c.project || "", ports: c.ports || [], ok: /^Up/.test(c.status) && c.healthy !== false || /^Up/.test(c.status), status: c.status, node: n });
+  for (const s of d.services || []) out.push({ kind: "service", name: s.name, group: "", ports: [], ok: s.running, status: s.running ? "running" : s.state, node: n, unit: s.unit, user: s.user });
+  return out;
+}
+const healthOf = (n) => nodeDown(n) ? ["Tidak terjangkau", "bad"] : S.state.alerts.some((a) => a.node === n.name && a.level === 2) ? ["Perlu dicek", "warn"] : S.state.alerts.some((a) => a.node === n.name) ? ["Perlu dicek", "warn"] : ["Sehat", "ok"];
+const meterRow = (label, right, v) => `<div class="mrow"><div class="row small"><span>${label}</span><span class="spacer"></span><span class="muted">${right}</span></div><div class="mbar"><i style="width:${Math.round(Math.min(1, v || 0) * 100)}%;background:${barColor(v || 0)}"></i></div></div>`;
+
+// Infrastruktur: one card per device (NodeCard).
+function infra() {
+  const cards = S.state.nodes.map((n) => {
+    const d = n.detail || {}, l = nodeLast(n), [h, hc] = healthOf(n), apps = nodeApps(n), down = apps.filter((a) => !a.ok).length;
+    const cores = d.cores || 1, disk = (d.disks || [])[0] || {};
+    const body = nodeDown(n) ? `<div class="small red">${esc(d.error)}</div>` : !l.t ? '<div class="small muted">Memeriksa…</div>' :
+      meterRow("CPU", `load ${(l.load || 0).toFixed(2)} · ${cores} core`, (l.load || 0) / cores / 1.5) +
+      meterRow("RAM", `${pctTxt(l.mem)} dari ${d.memTotalGB ? d.memTotalGB.toFixed(1) + " GB" : "–"}`, l.mem) +
+      meterRow("Disk", `${pctTxt(l.disk)} dari ${disk.totalGB ? Math.round(disk.totalGB) + " GB" : "–"}`, l.disk) +
+      `<div class="row wrap" style="gap:6px;margin-top:4px"><span class="chip">up ${upTxt(d.uptime)}</span>${l.temp != null ? `<span class="chip ${l.temp > 75 ? "bad" : ""}">${Math.round(l.temp)}°C</span>` : ""}<span class="chip ${down ? "bad" : "ok"}">${apps.length} app</span>${l.thr ? '<span class="chip warn">throttled</span>' : ""}</div>`;
+    return `<div class="card ncard"><div class="row" style="align-items:flex-start"><span class="tile">${icon("server")}</span>
+        <div style="flex:1;min-width:0"><b>${esc(n.name)}</b><div class="small ellipsis" style="color:var(--ink2)">${esc(hwSummary(n.detail))}</div><div class="tiny mono muted ellipsis">${esc(n.local ? "lokal (server ini)" : n.description || "")}</div></div>
+        <span class="chip ${hc}">${h}</span></div>${body}
+      <div class="row" style="gap:8px;margin-top:4px"><button class="btn" data-act="refresh" title="Refresh">↻</button><a class="btn" href="#/monitor/servers/${esc(n.id)}">Detail di Monitor</a></div></div>`;
+  }).join("");
+  return head("Infrastruktur", "RasPi dan server yang dipantau Raphael Web lewat SSH key", refreshBtn) + `<div class="grid g3">${cards}</div>`;
+}
+
+// Monitor (Ringkasan · Aplikasi · Server · Jobs · Traffic, plus Insiden and Notifikasi on the web).
+const MON_TABS = [["summary", "Ringkasan"], ["apps", "Aplikasi"], ["servers", "Server"], ["jobs", "Jobs"], ["traffic", "Traffic"], ["incidents", "Insiden"], ["notify", "Notifikasi"]];
+function monitorPage() {
+  const [tab0, sub] = (S.arg || "summary").split("|");
+  const tab = MON_TABS.some(([t]) => t === tab0) ? tab0 : "summary";
+  const st = S.state, allApps = st.nodes.flatMap(nodeApps);
+  const badge = { summary: st.alerts.filter((a) => a.level === 2).length, apps: allApps.filter((a) => !a.ok).length,
+    jobs: st.alerts.filter((a) => a.kind === "job").length, incidents: (st.openIncidents || []).length };
+  const hours = S.filters.hours || 6;
+  const rangeSeg = `<div class="seg">${[[1, "1 jam"], [6, "6 jam"], [24, "24 jam"]].map(([v, t]) => `<button class="${hours === v ? "on" : ""}" data-act="hours" data-v="${v}">${t}</button>`).join("")}</div>`;
+  const tabs = `<div class="tabs" role="tablist">${MON_TABS.map(([t, l]) => `<a href="#/monitor/${t}" class="${tab === t ? "on" : ""}">${l}${badge[t] ? ` <span class="badge${t === "apps" || t === "jobs" ? " warn" : ""}">${badge[t]}</span>` : ""}</a>`).join("")}</div>`;
+  const embed = (html) => `<div class="embedded">${html}</div>`;
+  const body = tab === "summary" ? monSummary(allApps) : tab === "apps" ? monApps(st.nodes) : tab === "servers" ? monServers(sub)
+    : tab === "jobs" ? embed(jobs()) : tab === "traffic" ? embed(traffic()) : tab === "incidents" ? embed(incidents()) : embed(notifyPage());
+  return head("Monitor", "Semua server, aplikasi dan website yang dipantau Raphael Web", rangeSeg + refreshBtn) + tabs + body;
+}
+const ALERT_CATS = [["Daya & suhu", (a) => /daya|suhu|undervoltage|throttl/i.test(a.text)], ["Resource", (a) => /disk|ram|memori|swap|cpu|load/i.test(a.text)],
+  ["Layanan", (a) => /container|service|unit|restart/i.test(a.text)], ["Cron & job", (a) => a.kind === "job"],
+  ["Keamanan", (a) => /ssh|keamanan|security|update|reboot/i.test(a.text)], ["Website & traffic", (a) => a.kind === "site" || /website|ssl|tunnel|internet/i.test(a.text)]];
+function monSummary(apps) {
+  const st = S.state, alerts = st.alerts, running = apps.filter((a) => a.ok).length, bad = apps.filter((a) => !a.ok);
+  const online = st.nodes.filter((n) => !nodeDown(n) && nodeLast(n).t).length;
+  const req = st.nodes.reduce((x, n) => x + (nodeLast(n).req || 0), 0);
+  const crit = alerts.filter((a) => a.level === 2).length, warn = alerts.filter((a) => a.level === 1).length, info = alerts.length - crit - warn;
+  const kpi = (l, v, n, tone, ic, href) => `<a class="card mkpi" href="${href}"><div class="row"><span class="lbl">${l}</span><span class="spacer"></span><span class="ico" style="color:${tone}">${icon(ic)}</span></div><div class="v">${v}</div><div class="n" style="color:${tone === "var(--green)" || tone === "var(--violet)" ? "var(--muted)" : tone}">${n}</div></a>`;
+  const used = new Set();
+  const groups = ALERT_CATS.map(([name, f]) => { const l = alerts.filter((a) => !used.has(a) && f(a)); l.forEach((a) => used.add(a)); return [name, l]; });
+  const rest = alerts.filter((a) => !used.has(a)); if (rest.length) groups.push(["Lainnya", rest]);
+  const lvl = (a) => a.level === 2 ? ["Kritis", "bad"] : a.level === 1 ? ["Peringatan", "warn"] : ["Info", "info"];
+  const grouped = groups.filter(([, l]) => l.length).map(([name, l]) => `<div class="agroup"><div class="small" style="font-weight:650;color:var(--ink2)">${esc(name)}</div>${l.map((a) => { const [t, c] = lvl(a); return `<div class="arow"><span class="chip ${c}" style="justify-content:center">${t}</span><b class="small ellipsis">${esc(a.node)}</b><span class="small" style="color:var(--ink2)">${esc(a.text)}</span></div>`; }).join("")}</div>`).join("");
+  const appRows = bad.slice(0, 8).map((a) => `<div class="item"><span class="dot bad"></span><div class="ellipsis" style="flex:1"><b class="small">${esc(a.name)}</b><div class="tiny muted ellipsis">${esc(a.node.name)} · ${esc(a.status)}</div></div></div>`).join("");
+  const tiles = st.nodes.map((n) => { const l = nodeLast(n), d = n.detail || {};
+    return `<a class="card stile" href="#/monitor/servers|${esc(n.id)}"><div class="row"><span class="dot ${nodeDown(n) ? "bad" : l.t ? "ok" : ""}"></span><b class="ellipsis">${esc(n.name)}</b><span class="spacer"></span>${l.temp != null ? `<span class="tiny ${l.temp > 75 ? "red" : "muted"}">${Math.round(l.temp)}°C</span>` : ""}</div>
+      <div class="tiny ellipsis" style="color:var(--ink2)">${esc(hwSummary(n.detail))}</div>${n.description ? `<div class="tiny muted" style="margin-top:2px">${esc(n.description)}</div>` : ""}
+      ${meterRow("CPU", pctTxt(l.cpu), l.cpu)}${meterRow("RAM", pctTxt(l.mem), l.mem)}</a>`; }).join("");
+  return `<div class="stack"><div class="grid g4">
+      ${kpi("Aplikasi berjalan", `${running}/${apps.length}`, bad.length ? `${bad.length} bermasalah atau mati` : "semua normal", bad.length ? "var(--amber)" : "var(--green)", "apps", "#/monitor/apps")}
+      ${kpi("Server online", `${online}/${st.nodes.length}`, online === st.nodes.length ? "semua terjangkau" : `${st.nodes.length - online} tidak terjangkau`, online === st.nodes.length ? "var(--green)" : "var(--red)", "server", "#/monitor/servers")}
+      ${kpi("Traffic sekarang", req < 10 ? req.toFixed(1) : Math.round(req), "request / menit lewat tunnel", "var(--violet)", "chart", "#/monitor/traffic")}
+      ${kpi("Sinyal", `${crit} kritis`, `${warn} peringatan · ${info} info`, crit ? "var(--red)" : "var(--green)", "pulse", "#/monitor/incidents")}
+    </div>
+    <div class="sumgrid"><div class="card"><div class="lbl" style="margin-bottom:10px">Perlu perhatian</div>${grouped || '<div class="small green">✓ Tidak ada masalah</div>'}</div>
+      <div class="card"><div class="row" style="margin-bottom:6px"><span class="lbl">Aplikasi yang perlu dicek</span><span class="spacer"></span><a class="small" href="#/monitor/apps">Semua aplikasi</a></div>
+        <div class="list">${appRows || '<div class="small green">✓ Semua aplikasi berjalan normal</div>'}</div></div></div>
+    <div class="lbl">Server</div><div class="grid g3">${tiles}</div></div>`;
+}
+function appCards(nodes) {
+  return nodes.map((n) => {
+    const apps = nodeApps(n), ok = apps.filter((a) => a.ok).length;
+    const groups = {};
+    for (const a of apps) (groups[a.kind === "service" ? "SERVICE" : (a.group || "CONTAINER").toUpperCase()] ||= []).push(a);
+    const rows = Object.entries(groups).map(([g, l]) => `<div class="lbl" style="margin:10px 0 4px">${esc(g)}</div>` + l.map((a) => `<div class="approw ${a.ok ? "" : "down"}"><span class="dot ${a.ok ? "ok" : "bad"}"></span><span class="ico">${icon(a.kind === "service" ? "pulse" : "grid")}</span><b class="small ellipsis">${esc(a.name)}</b>${a.ports.length ? `<span class="tiny mono muted">:${a.ports.join(", :")}</span>` : ""}<span class="spacer"></span><span class="small ${a.ok ? "muted" : "red"} ellipsis">${esc(a.status)}</span></div>`).join("")).join("");
+    return `<div class="card"><div class="row"><span class="dot ${nodeDown(n) ? "bad" : ok === apps.length ? "ok" : "warn"}"></span><h3>${esc(n.name)}</h3><span class="spacer"></span><span class="chip ${ok === apps.length ? "ok" : "bad"}">${ok}/${apps.length} jalan</span></div>${rows || '<div class="small muted" style="margin-top:8px">Belum ada aplikasi terdeteksi.</div>'}</div>`;
+  }).join("");
+}
+const monApps = (nodes) => `<div class="stack">${appCards(nodes)}</div>`;
+function monServers(sub) {
+  const list = S.state.nodes, sel = list.find((n) => n.id === sub) || list.find((n) => n.id === S.filters.server) || list[0];
+  if (!sel) return '<div class="card empty"><b>Belum ada server</b></div>';
+  S.filters.server = sel.id;
+  const side = list.length > 1 ? `<div class="card slist">${list.map((n) => { const l = nodeLast(n);
+    return `<a href="#/monitor/servers|${esc(n.id)}" class="${n.id === sel.id ? "on" : ""}"><span class="dot ${nodeDown(n) ? "bad" : l.t ? "ok" : ""}"></span><div style="min-width:0"><div class="small ellipsis" style="font-weight:${n.id === sel.id ? 650 : 500}">${esc(n.name)}</div><div class="tiny ellipsis" style="color:var(--ink2)">${esc(hwSummary(n.detail))}</div><div class="tiny muted">${l.t ? `CPU ${pctTxt(l.cpu)} · RAM ${pctTxt(l.mem)}` : esc((n.detail || {}).error || "…")}</div></div></a>`; }).join("")}</div>` : "";
+  const d = sel.detail || {}, l = nodeLast(sel), hw = d.hw || {}, disks = d.disks || [];
+  const mini = (k, label, value, foot, color) => `<div class="mmini"><div class="lbl">${label}</div><div class="v">${value}</div><div class="spark-slot" data-spark="${k}" data-color="${color}"></div>${foot ? `<div class="tiny muted">${foot}</div>` : ""}</div>`;
+  const top = (rows, mode) => (rows || []).slice(0, 5).map((p) => `<div class="prow"><span class="ellipsis">${esc(p.name)}</span><span class="tiny muted">${mode === "cpu" ? `${(p.mem || 0).toFixed(1)}% RAM` : `pid ${p.pid}`}</span><b class="mono">${(mode === "cpu" ? p.cpu : p.mem || 0).toFixed(1)}%</b></div>`).join("") || '<div class="tiny muted">–</div>';
+  const sys = [["Update paket", d.updates ? `${d.updates}${d.securityUpdates ? ` (${d.securityUpdates} keamanan)` : ""}` : "–"], ["Login SSH gagal 24 jam", d.sshFails ? String(d.sshFails) : "–"],
+    ["Perlu reboot", d.rebootRequired ? "ya" : "tidak"], ["Service gagal", (d.failed || []).length ? d.failed.join(", ") : "tidak ada"]];
+  const card = `<div class="card ndetail"><div class="row wrap"><span class="dot ${nodeDown(sel) ? "bad" : "ok"}" style="width:12px;height:12px"></span><h2 class="nname">${esc(sel.name)}</h2><span class="chip">up ${upTxt(d.uptime)}</span><span class="small muted">${d.cores || "–"} core · ${d.memTotalGB ? d.memTotalGB.toFixed(1) : "–"} GB RAM</span><span class="spacer"></span><span class="small muted">diperbarui ${ago(l.t || d.at)}</span></div>
+    ${nodeDown(sel) ? `<div class="small red">${esc(d.error)}</div>` : ""}
+    <div class="hwgrid"><div><div class="lbl">Perangkat</div><b>${esc((hw.model || "–").replace(/ Rev [\d.]+$/, ""))}</b></div><div><div class="lbl">Prosesor</div><b>${esc(hw.cpu || "–")}</b></div><div><div class="lbl">Sistem</div><b>${esc((hw.os || "–").replace(/ GNU\/Linux/, ""))}</b></div><div><div class="lbl">Penyimpanan</div><b>${esc((hw.storage || []).join(", ") || "–")}</b></div></div>
+    <div class="mminis">${mini("cpu", "CPU", pctTxt(l.cpu), "", "var(--violet)")}${mini("mem", "RAM", pctTxt(l.mem), l.swap != null ? `swap ${pctTxt(l.swap)}` : "", "var(--blue)")}${mini("disk", "Disk /", pctTxt(l.disk), "", "var(--amber)")}${mini("rx", "Network", `↓${rate(l.rx)} ↑${rate(l.tx)}`, "", "var(--green)")}${mini("load", "Load", (l.load || 0).toFixed(2), `${d.cores || "–"} core`, "var(--orchid)")}${l.temp != null ? mini("temp", "Suhu", `${Math.round(l.temp)}°C`, l.thr ? "throttled" : "", "var(--red)") : ""}</div>
+    <div class="ncols"><div><div class="lbl">Proses teratas · CPU</div>${top(d.topCPU, "cpu")}<div class="lbl" style="margin-top:14px">Proses teratas · RAM</div>${top(d.topMem, "mem")}</div>
+      <div><div class="lbl">Disk</div>${disks.map((x) => `<div class="mrow"><div class="row small"><span class="mono">${esc(x.mount)}</span><span class="spacer"></span><span class="muted">${pctTxt(x.used)} dari ${Math.round(x.totalGB)} GB</span></div><div class="mbar"><i style="width:${Math.round(x.used * 100)}%;background:${barColor(x.used)}"></i></div></div>`).join("") || '<div class="tiny muted">–</div>'}
+        <div class="lbl" style="margin-top:14px">Keamanan & sistem</div>${sys.map(([k, v]) => `<div class="prow"><span>${k}</span><span></span><b>${esc(v)}</b></div>`).join("")}</div></div></div>`;
+  return `<div class="srvgrid ${side ? "" : "solo"}">${side}${card}</div>`;
+}
+async function drawServerSparks() {
+  const id = S.filters.server, hours = S.filters.hours || 6;
+  if (!id || !$("[data-spark]")) return;
+  const key = `${id}:${hours}`;
+  if (!S.history[key] || Date.now() - S.history[key].at > 30000) {
+    try { S.history[key] = { at: Date.now(), samples: (await api("GET", `/api/history?node=${encodeURIComponent(id)}&hours=${hours}`)).samples }; } catch { return; }
+  }
+  const smp = S.history[key].samples;
+  for (const el of $$("[data-spark]")) {
+    const k = el.dataset.spark, vals = smp.map((x) => x[k]);
+    el.innerHTML = spark(vals, el.dataset.color, k === "temp" ? 90 : ["cpu", "mem", "disk"].includes(k) ? 1 : null);
+  }
+}
+
+// Aplikasi & Website: websites first, then each server's containers and services.
+function appsAndSites() {
+  const rows = S.state.sites.map((s) => { const st = s.status;
+    return `<div class="siterow"><span class="dot ${!st ? "" : st.ok ? "ok" : "bad"}"></span><b class="ellipsis">${esc(s.name)}</b><a class="mono small ellipsis" href="${esc(s.url)}" target="_blank" rel="noopener noreferrer">${esc(s.url)}</a><span class="spacer"></span>
+      <span class="small ${st && !st.ok ? "red" : ""}">${st ? (st.ok ? `HTTP ${st.code}` : esc(st.error || `HTTP ${st.code}`)) : "belum dicek"}</span><span class="small mono muted">${st ? `${st.ms} ms` : "–"}</span>
+      <span class="small ${s.certDays != null && s.certDays < 14 ? "amber" : "muted"}">${s.certDays == null ? "" : `SSL ${s.certDays} hr`}</span></div>`; }).join("");
+  return head("Aplikasi & Website", "Container Docker, service systemd dan website di setiap server", `<button class="btn" data-act="refresh">↻ Cek ulang</button>`) +
+    `<div class="stack"><div class="card"><div class="lbl" style="margin-bottom:8px">Website</div>${rows || '<div class="small muted">Belum ada website.</div>'}</div>${appCards(S.state.nodes)}</div>`;
 }
 
 // ── Overview ──
@@ -203,7 +335,7 @@ function overview() {
     <div class="grid g2">
       <div class="card"><h2>Perlu perhatian</h2>${alerts ? `<div class="list">${alerts}</div>` : `<div class="empty"><b>Tidak ada alert</b>Semua sinyal yang dipantau normal.</div>`}</div>
       <div class="stack">
-        ${(st.openIncidents || []).length ? `<div class="card"><h2>Insiden terbuka</h2><div class="list">${st.openIncidents.map((i) => `<div class="item"><span class="dot bad"></span><div class="ellipsis" style="flex:1"><b>${esc(i.title)}</b><div class="tiny muted ellipsis">${esc(i.detail || "")}</div></div><span class="small muted">sejak ${ago(i.started)}</span></div>`).join("")}</div><div class="small" style="margin-top:6px"><a href="#/incidents">Riwayat insiden →</a></div></div>` : ""}
+        ${(st.openIncidents || []).length ? `<div class="card"><h2>Insiden terbuka</h2><div class="list">${st.openIncidents.map((i) => `<div class="item"><span class="dot bad"></span><div class="ellipsis" style="flex:1"><b>${esc(i.title)}</b><div class="tiny muted ellipsis">${esc(i.detail || "")}</div></div><span class="small muted">sejak ${ago(i.started)}</span></div>`).join("")}</div><div class="small" style="margin-top:6px"><a href="#/monitor/incidents">Riwayat insiden →</a></div></div>` : ""}
         <div class="card"><h2>Device</h2><div class="list">${nodes}</div></div>
         ${backupCard()}
         <div class="card"><h2>Website</h2><div class="list">${st.sites.map(siteLine).join("") || `<div class="muted">Belum ada website.</div>`}</div></div>
@@ -329,7 +461,7 @@ async function loadIncidents(force) {
     const [a, b] = await Promise.all([api("GET", "/api/incidents?days=30"), api("GET", "/api/actionlog")]);
     S.inc = { ...a, actions: b.log, at: Date.now() };
   } catch (e) { S.inc = { error: e.message, at: Date.now() }; }
-  if (S.route === "incidents") $("#main").innerHTML = incidents();
+  if (S.route === "monitor") render();
 }
 function incidents() {
   const x = S.inc;
@@ -365,7 +497,7 @@ function durText(s) {
 async function loadNotify(force) {
   if (!force && S.ntf && Date.now() - S.ntf.at < 20000) return;
   try { S.ntf = { ...(await api("GET", "/api/notify")), at: Date.now() }; } catch (e) { S.ntf = { error: e.message, at: Date.now() }; }
-  if (S.route === "notify") $("#main").innerHTML = notifyPage();
+  if (S.route === "monitor") render();
 }
 function notifyPage() {
   const x = S.ntf;
@@ -491,7 +623,7 @@ async function loadClarity(force) {
   if (S.clarityLoading || (!force && S.clarity && Date.now() - S.clarityAt < 60000)) return;
   S.clarityLoading = true;
   try { S.clarity = await api("GET", "/api/clarity"); S.clarityAt = Date.now(); } catch (e) { S.clarity = { state: "error", error: e.message }; }
-  finally { S.clarityLoading = false; if (S.route === "traffic") render(); }
+  finally { S.clarityLoading = false; if (S.route === "monitor") render(); }
 }
 const clDur = (sec) => sec == null ? "–" : sec >= 60 ? `${Math.floor(sec / 60)} mnt ${Math.round(sec % 60)} dtk` : `${Math.round(sec)} dtk`;
 const clPct = (v) => v == null ? "–" : `${Number(v).toFixed(v < 10 ? 1 : 0)}%`;
@@ -564,7 +696,7 @@ async function loadWorldMap() {
         .map((p, i) => `${i ? "L" : "M"}${((p[0] + 180) / 360 * 1000).toFixed(1)},${((90 - p[1]) / 180 * 500).toFixed(1)}`).join(" ") + " Z").join(" "),
     })).filter((c) => (/^[A-Z]{2}$/.test(c.code) || c.code.startsWith("NE-")) && c.path.length > 3);
   } catch (e) { S.worldError = e.message; }
-  finally { S.worldLoading = false; if (S.route === "traffic") render(); }
+  finally { S.worldLoading = false; if (S.route === "monitor") render(); }
 }
 function cfOriginMap(z, available = true) {
   const countries = available ? cfCountries(z) : [], counts = new Map(countries), selected = available ? S.filters.cfCountry || "" : "", total = available ? cfSum(z, "requests") : 0;
@@ -1069,7 +1201,8 @@ applyTheme(savedTheme);
 // Routing & polling
 function route() {
   let [r, arg] = location.hash.replace(/^#\/?/, "").split("/");
-  if (r === "monitor") { location.replace("#/incidents"); return; }
+  const old = { incidents: "incidents", notify: "notify", jobs: "jobs", traffic: "traffic" };   // earlier web routes → Monitor tabs
+  if (old[r]) { location.replace(`#/monitor/${old[r]}`); return; }
   if (r === "projects") {                                   // like the Mac app: the board of the last (or first active) project
     const ps = S.ws ? S.ws.projects.filter((p) => p.lifecycle !== "archived") : [];
     let last = ""; try { last = localStorage.getItem("raphaelLastProject") || ""; } catch { /* ignore */ }
@@ -1106,9 +1239,9 @@ function paletteItems() {
   NAV.forEach(([, items]) => items.forEach(([id, ico, title]) => out.push({ t: title, s: "Halaman", h: `#/${id}`, ico })));
   const st = S.state || { nodes: [], sites: [] };
   st.nodes.forEach((n) => {
-    out.push({ t: n.name, s: "Server", h: "#/servers", ico: "▤" });
+    out.push({ t: n.name, s: "Server", h: `#/monitor/servers|${n.id}`, ico: "▤" });
     ((n.detail && n.detail.jobs) || []).filter((j) => !j.system).forEach((j) => out.push({ t: j.name, s: `Job · ${n.name}`, h: "#/jobs", ico: "◷", job: `${n.id}|${j.id}` }));
-    ((n.detail && n.detail.containers) || []).forEach((c) => out.push({ t: c.name, s: `Container · ${n.name}`, h: "#/servers", ico: "▣" }));
+    ((n.detail && n.detail.containers) || []).forEach((c) => out.push({ t: c.name, s: `Container · ${n.name}`, h: "#/monitor/apps", ico: "▣" }));
   });
   st.sites.forEach((x) => out.push({ t: x.name, s: "Website", h: "#/websites", ico: "◎" }));
   if (S.ws) {
