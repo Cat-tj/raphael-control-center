@@ -385,6 +385,16 @@ class Http(unittest.TestCase):
             time.sleep(0.05)
         self.assertEqual((c["state"], c["used"]), ("noToken", 0))
 
+    def test_cloudflare_requests_need_access(self):
+        # Without an access config, anything that came through Cloudflare is refused; the tailnet is unchanged.
+        code, r, _ = self.req("GET", "/api/state", headers={"Cf-Ray": "abc"})
+        self.assertEqual(code, 403)
+        self.assertIn("access", r["error"])
+        code, r, _ = self.req("POST", "/api/project", {"name": "x"}, headers={"Cf-Ray": "abc", "X-Raphael": "1", "Content-Type": "application/json"})
+        self.assertEqual(code, 403)
+        code, me, _ = self.req("GET", "/api/me", headers={"Tailscale-User-Login": "me@example.test"})
+        self.assertEqual((code, me["login"], me["via"]), (200, "me@example.test", "tailnet"))
+
 
 class Clarity(unittest.TestCase):
     """Same cases as rust/src/clarity.rs."""
@@ -448,6 +458,34 @@ class Clarity(unittest.TestCase):
             c.refresh([("test", "tok")], manual=True)
         self.assertEqual((c.view()["state"], c.view()["used"]), ("denied", 3))
         self.assertEqual(c.view()["totals"]["sessions"], 120)               # last good numbers stay
+
+
+class AccessJwt(unittest.TestCase):
+    def test_pkcs1_sha256_verify_and_token_sources(self):
+        import access
+        # A tiny 2048-bit key pair built from fixed primes: sign with d, verify with the public (n, e).
+        p = int("e" * 255 + "f", 16) | 1
+        while any(p % q == 0 for q in range(3, 2000, 2)) or pow(2, p - 1, p) != 1:
+            p += 2
+        q = int("c" * 255 + "d", 16) | 1
+        while any(q % r == 0 for r in range(3, 2000, 2)) or pow(2, q - 1, q) != 1:
+            q += 2
+        n, e = p * q, 65537
+        d = pow(e, -1, (p - 1) * (q - 1))
+        k = (n.bit_length() + 7) // 8
+        msg = b"header.payload"
+        want = access.SHA256_PREFIX + access.hashlib.sha256(msg).digest()
+        em = b"\x00\x01" + b"\xff" * (k - len(want) - 3) + b"\x00" + want
+        sig = pow(int.from_bytes(em, "big"), d, n).to_bytes(k, "big")
+        nb, eb = n.to_bytes(k, "big"), e.to_bytes(3, "big")
+        self.assertTrue(access.rsa_verify(nb, eb, msg, sig))
+        self.assertFalse(access.rsa_verify(nb, eb, b"header.payloaD", sig))
+        self.assertEqual(access.token({"Cookie": "a=1; CF_Authorization=x.y.z"}), "x.y.z")
+        a = access.Access("team.cloudflareaccess.com", "aud1")
+        for bad, why in ((None, "belum login"), ("x", "tidak valid"), ("eyJhbGciOiJIUzI1NiJ9.e30.c2ln", "algoritma")):
+            with self.assertRaises(ValueError) as cm:
+                a.check(bad)
+            self.assertIn(why, str(cm.exception))
 
 
 class Cloudflare(unittest.TestCase):

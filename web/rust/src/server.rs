@@ -2,7 +2,7 @@
 //! Linux box and the desktop app (Tauri) both start it with `start`.
 
 use crate::core::{now, s};
-use crate::{clarity, files, hermes, metrics, monitor, operations, workspace};
+use crate::{access, clarity, files, hermes, metrics, monitor, operations, workspace};
 use crate::util::log;
 use serde_json::{json, Value};
 use std::io::Read;
@@ -23,6 +23,7 @@ pub struct App {
     statics: Static,
     last_refresh: Mutex<f64>,
     clarity: Arc<clarity::Clarity>,
+    access: Option<access::Access>,
 }
 
 pub fn load_config(path: &str) -> Value {
@@ -64,7 +65,8 @@ impl App {
         let mon = Arc::new(monitor::Monitor::new(cfg.clone(), metrics.clone(), COLLECTOR.to_string()));
         let ops = Arc::new(operations::Operations::new(mon.clone(), metrics.clone(), ws.clone(), cfg.clone()));
         let clarity = Arc::new(clarity::Clarity::new(metrics.clone()));
-        App { cfg, metrics, ws, mon, ops, ws_rev, statics, last_refresh: Mutex::new(0.0), clarity }
+        let access = access::Access::from_config(&cfg);
+        App { cfg, metrics, ws, mon, ops, ws_rev, statics, last_refresh: Mutex::new(0.0), clarity, access }
     }
 
     fn start(self: &Arc<Self>) {
@@ -257,6 +259,22 @@ fn write_allowed(req: &Request) -> bool {
 }
 
 fn handle(app: Arc<App>, mut req: Request) {
+    // Through Cloudflare (the public hostname): Access must have signed the user in.
+    let header = |n: &str| hdr(&req, n);
+    let public = access::via_cloudflare(&header);
+    let user: Option<String> = if public {
+        let checked = match app.access.as_ref() {
+            Some(a) => a.check(access::token(&header)),
+            None => Err("akses publik belum dikonfigurasi (access di config)".into()),
+        };
+        match checked {
+            Ok(email) => Some(email),
+            Err(e) => return json_resp(req, 403, json!({"error": e})),
+        }
+    } else {
+        hdr(&req, "Tailscale-User-Login")
+    };
+    let user_name = if public { user.clone() } else { hdr(&req, "Tailscale-User-Name") };
     let url = req.url().to_string();
     let path = url.split('?').next().unwrap_or("/").to_string();
     let q = query(&url);
@@ -314,7 +332,7 @@ fn handle(app: Arc<App>, mut req: Request) {
                 Ok(v) => v,
                 Err(e) => return json_resp(req, 400, json!({"error": e})),
             },
-            "/api/me" => json!({"login": hdr(&req, "Tailscale-User-Login"), "name": hdr(&req, "Tailscale-User-Name")}),
+            "/api/me" => json!({"login": user, "name": user_name, "via": if public { "cloudflare" } else { "tailnet" }}),
             "/healthz" => json!({"ok": true, "version": env!("CARGO_PKG_VERSION"), "workspace": app.ws.integrity_ok(), "impl": "rust"}),
             p if p.starts_with("/api/") => return json_resp(req, 404, json!({"error": "tidak ada"})),
             _ => return serve_static(&app, req, &path),
@@ -391,7 +409,7 @@ fn handle(app: Arc<App>, mut req: Request) {
                 Ok((200, app.ops.notify(&text, true)))
             }
             (Method::Post, ["api", "action"]) => {
-                let who = hdr(&req, "Tailscale-User-Login").unwrap_or_default();
+                let who = user.clone().unwrap_or_default();
                 app.ops.action(s(&body, "node"), s(&body, "kind"), s(&body, "target"), &who).map(|v| (200, v))
             }
             (Method::Post, ["api", "ws", "apply"]) => {

@@ -3087,6 +3087,7 @@ dependencies = [
  "chrono",
  "glob",
  "regex",
+ "ring",
  "rusqlite",
  "rustls",
  "serde",

@@ -34,6 +34,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 mimetypes.add_type("application/manifest+json", ".webmanifest")
 mimetypes.add_type("text/javascript", ".js")
 sys.path.insert(0, HERE)
+import access  # noqa: E402
 import core  # noqa: E402
 import files  # noqa: E402
 import hermes  # noqa: E402
@@ -587,6 +588,7 @@ class App:
         self.monitor.ops = self.ops
         from clarity import Clarity
         self.clarity = Clarity(self.metrics)
+        self.access = access.Access.from_config(cfg)
 
     def start_clarity(self):
         import clarity
@@ -654,10 +656,27 @@ def make_handler(app: App):
                     return False
             return True
 
+        def _gate(self) -> bool:
+            """Through Cloudflare (the public hostname) Access must have signed the user in."""
+            self.public = access.via_cloudflare(self.headers)
+            if not self.public:
+                self.user, self.user_name = self.headers.get("Tailscale-User-Login"), self.headers.get("Tailscale-User-Name")
+                return True
+            try:
+                if not app.access:
+                    raise ValueError("akses publik belum dikonfigurasi (access di config)")
+                self.user = self.user_name = app.access.check(access.token(self.headers))
+                return True
+            except ValueError as e:
+                self._json(403, {"error": str(e)})
+                return False
+
         def do_HEAD(self):
             self.do_GET()
 
         def do_GET(self):
+            if not self._gate():
+                return
             u = urlparse(self.path)
             q = {k: v[0] for k, v in parse_qs(u.query).items()}
             try:
@@ -711,7 +730,7 @@ def make_handler(app: App):
                     except ValueError as e:
                         return self._json(400, {"error": str(e)})
                 if u.path == "/api/me":
-                    return self._json(200, {"login": self.headers.get("Tailscale-User-Login"), "name": self.headers.get("Tailscale-User-Name")})
+                    return self._json(200, {"login": self.user, "name": self.user_name, "via": "cloudflare" if self.public else "tailnet"})
                 if u.path == "/healthz":
                     return self._json(200, {"ok": True, "version": VERSION, "workspace": app.ws.integrity_ok()})
                 if u.path.startswith("/api/"):
@@ -739,6 +758,8 @@ def make_handler(app: App):
             self._send(200, body, ctype)
 
         def _write(self, method: str):
+            if not self._gate():
+                return
             u = urlparse(self.path)
             if not self._write_allowed():
                 return self._json(403, {"error": "ditolak (header X-Raphael / Origin)"})
@@ -765,7 +786,7 @@ def make_handler(app: App):
                     return self._json(200, {"applied": n, "rev": app.ws_rev, "clean": body.get("baseRev") == base})
                 if parts[:2] == ["api", "action"] and method == "POST":
                     try:
-                        r = app.ops.action(body.get("node", ""), body.get("kind", ""), body.get("target", ""), self.headers.get("Tailscale-User-Login") or "")
+                        r = app.ops.action(body.get("node", ""), body.get("kind", ""), body.get("target", ""), self.user or "")
                     except ValueError as e:
                         raise WorkspaceError(str(e))
                     return self._json(200, r)

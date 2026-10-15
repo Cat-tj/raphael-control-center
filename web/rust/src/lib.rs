@@ -1,6 +1,7 @@
 //! Raphael Web: the Control Center's monitor, operations and workspace — as a server binary
 //! for an always-on Linux box and as a library embedded in the desktop app.
 
+pub mod access;
 pub mod assets;
 pub mod clarity;
 pub mod core;

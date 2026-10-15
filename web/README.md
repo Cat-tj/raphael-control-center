@@ -83,6 +83,20 @@ RAPHAEL_WEB_IMPL=python web/deploy.sh user@host 8787    # run the Python server 
 - The Cloudflare token is read on the server from the configured `.env` files and never sent
   to the browser. No other credentials are read.
 
+## Public hostname (Cloudflare Tunnel + Access)
+
+Raphael Web has no login of its own, so a public hostname must sit behind Cloudflare Access:
+
+1. Create a self-hosted Access application for the hostname (allow only your emails) and note its
+   AUD tag and your team domain (`<team>.cloudflareaccess.com`).
+2. Add them to the config: `"access": {"team": "<team>.cloudflareaccess.com", "aud": "<AUD tag>"}`.
+3. Run a remotely managed tunnel on the same box with ingress `http://127.0.0.1:8790`
+   (`cloudflared tunnel run` with `TUNNEL_TOKEN` from a root-only env file) and a proxied CNAME.
+
+Every request that arrives through Cloudflare (`Cf-Ray`) must then carry a valid Access JWT (RS256,
+team keys, AUD, expiry, issuer); without the `access` config such requests are refused (403). The
+signed-in email replaces the Tailscale identity in `/api/me` and the action log. Tailnet requests are unchanged.
+
 ## Data and rollback
 
 Data lives in `~/.local/share/raphael-web/` (`workspace.sqlite` with `backups/`, and
