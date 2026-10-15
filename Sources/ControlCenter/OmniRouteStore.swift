@@ -6,9 +6,12 @@ import Security
 struct ORInstance: Identifiable, Codable, Hashable {
     var id: String
     var name: String
-    var baseURL: String     // root, e.g. http://127.0.0.1:20128
-    /// The instance's web dashboard.
-    var dashboardURL: String { baseURL.trimmingCharacters(in: CharacterSet(charactersIn: "/")) + "/dashboard" }
+    var baseURL: String     // root, e.g. https://pi.tailnet.ts.net:20128; empty = reachable only over SSH
+    /// The device it runs on. When its URL doesn't answer from this Mac (firewall, LAN only,
+    /// behind a jump host), the API is read over SSH on that device instead.
+    var node: String? = nil
+    /// The instance's web dashboard (nil when it is only reachable over SSH).
+    var dashboardURL: String? { baseURL.isEmpty ? nil : baseURL.trimmingCharacters(in: CharacterSet(charactersIn: "/")) + "/dashboard" }
 }
 
 struct ORConnection: Identifiable, Hashable {
@@ -69,6 +72,9 @@ struct ORDay: Identifiable, Hashable {
 
 struct ORSnapshot {
     var reachable = false
+    /// No answer at all (connection failed), as opposed to an HTTP error.
+    var unreachable = false
+    var viaSSH = false
     var error: String?
     var connections: [ORConnection] = []
     var metrics: [ORProviderMetric] = []
@@ -114,10 +120,10 @@ final class OmniRouteStore: ObservableObject {
             instances = saved
         } else {
             let local = HermesConfig.endpoint()?.baseURL ?? "http://127.0.0.1:20128"
-            // Other devices' OmniRoute instances are added when that device is opened (followDevice).
             instances = [ORInstance(id: "local", name: "Mac ini", baseURL: local)]
             save()
         }
+        discover()
         // The primary Hermes device's OmniRoute (the RasPi) is the one shown first.
         selected = instances.first(where: { $0.id == DeviceContext.primaryHermesId })?.id ?? instances.first?.id ?? "local"
     }
@@ -128,6 +134,24 @@ final class OmniRouteStore: ObservableObject {
     }
 
     var current: ORSnapshot? { snapshots[selected] }
+
+    /// Adds every device that runs OmniRoute (capability probe), not only the one being viewed.
+    func discover() {
+        var changed = false
+        for n in NodeStore.shared.nodes where !n.isLocal {
+            if let i = instances.firstIndex(where: { $0.id == n.id }) {
+                if instances[i].node == nil { instances[i].node = n.id; changed = true }
+            } else if DeviceContext.shared.has("omniroute", n) {
+                instances.append(ORInstance(id: n.id, name: n.name, baseURL: "", node: n.id))
+                changed = true
+            }
+        }
+        if changed { save() }
+    }
+
+    private func sshNode(_ inst: ORInstance) -> RNode? {
+        NodeStore.shared.nodes.first { $0.id == (inst.node ?? inst.id) && !$0.isLocal }
+    }
 
     /// Per-instance key in the Keychain, else the key that device's Hermes uses.
     func key(for inst: ORInstance) async -> String {
@@ -162,14 +186,24 @@ final class OmniRouteStore: ObservableObject {
         refresh(inst)
     }
 
-    func refreshAll() { instances.forEach(refresh) }
+    func refreshAll() {
+        discover()
+        instances.forEach(refresh)
+    }
 
     func refresh(_ inst: ORInstance) {
         guard !loading.contains(inst.id) else { return }
         loading.insert(inst.id)
         Task {
             let key = await key(for: inst)
-            let snap = await Self.load(base: inst.baseURL, key: key)
+            var snap = ORSnapshot()
+            snap.unreachable = true
+            if !inst.baseURL.isEmpty { snap = await Self.load(base: inst.baseURL, key: key) }
+            if !snap.reachable, snap.unreachable, let node = sshNode(inst) {
+                let got = await Self.fetchOverSSH(node, key: key)
+                snap = await Self.load(place: "\(node.name) (lewat SSH)") { got[$0] ?? (nil, 0) }
+                snap.viaSSH = true
+            }
             snapshots[inst.id] = snap
             loading.remove(inst.id)
         }
@@ -199,19 +233,50 @@ final class OmniRouteStore: ObservableObject {
         return 0
     }
 
+    nonisolated static let apiPaths = ["/api/providers", "/api/provider-metrics", "/api/providers/health-matrix",
+                                       "/api/usage/provider-limits", "/api/usage/analytics"]
+
+    /// All API paths in one SSH session on the device, against its own 127.0.0.1:20128.
+    /// The key goes to curl as a config file on stdin (heredoc), so it never shows in `ps`.
+    nonisolated static func fetchOverSSH(_ node: RNode, key: String) async -> [String: (Any?, Int)] {
+        let k = key.replacingOccurrences(of: "\\", with: "\\\\").replacingOccurrences(of: "\"", with: "\\\"")
+        var script = "command -v curl >/dev/null 2>&1 || exit 0\n"
+        for p in apiPaths {
+            script += "echo '__OR__ \(p)'\ncurl -s -m 15 -w '\\n__CODE__%{http_code}\\n' -K - <<'RAPHAEL_OR_EOF'\n"
+                + "url = \"http://127.0.0.1:20128\(p)\"\n" + (k.isEmpty ? "" : "header = \"Authorization: Bearer \(k)\"\n") + "RAPHAEL_OR_EOF\n"
+        }
+        let out = await NodeStore.run(node: node, script: script, timeout: 60).output
+        var res: [String: (Any?, Int)] = [:]
+        for chunk in out.components(separatedBy: "__OR__ ").dropFirst() {
+            let lines = chunk.split(separator: "\n", maxSplits: 1, omittingEmptySubsequences: false)
+            guard let path = lines.first.map(String.init), lines.count > 1 else { continue }
+            let rest = String(lines[1])
+            guard let r = rest.range(of: "\n__CODE__", options: .backwards) ?? rest.range(of: "__CODE__", options: .backwards) else { continue }
+            let body = String(rest[..<r.lowerBound])
+            let code = Int(rest[r.upperBound...].trimmingCharacters(in: .whitespacesAndNewlines)) ?? 0
+            res[path] = (try? JSONSerialization.jsonObject(with: Data(body.utf8)), code)
+        }
+        return res
+    }
+
     nonisolated static func load(base: String, key: String) async -> ORSnapshot {
+        await load(place: base) { await get(base, $0, key: key) }
+    }
+
+    nonisolated static func load(place: String, _ fetch: @escaping @Sendable (String) async -> (Any?, Int)) async -> ORSnapshot {
         var s = ORSnapshot()
         s.fetchedAt = Date()
-        async let providersR = get(base, "/api/providers", key: key)
-        async let metricsR = get(base, "/api/provider-metrics", key: key)
-        async let matrixR = get(base, "/api/providers/health-matrix", key: key)
-        async let limitsR = get(base, "/api/usage/provider-limits", key: key)
-        async let analyticsR = get(base, "/api/usage/analytics", key: key)
+        async let providersR = fetch("/api/providers")
+        async let metricsR = fetch("/api/provider-metrics")
+        async let matrixR = fetch("/api/providers/health-matrix")
+        async let limitsR = fetch("/api/usage/provider-limits")
+        async let analyticsR = fetch("/api/usage/analytics")
 
         let (providers, code) = await providersR
         guard code == 200, let pj = providers as? [String: Any] else {
+            s.unreachable = code == 0
             s.error = code == 401 || code == 403 ? "API key ditolak. Masukkan key OmniRoute untuk instance ini."
-                    : code == 0 ? "Tidak terjangkau di \(base)" : "HTTP \(code)"
+                    : code == 0 ? "Tidak terjangkau di \(place)" : "HTTP \(code)"
             return s
         }
         s.reachable = true

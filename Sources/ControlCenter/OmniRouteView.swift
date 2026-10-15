@@ -11,21 +11,18 @@ struct OmniRoutePage: View {
             HStack(alignment: .bottom) {
                 RPageTitle(title: "OmniRoute", subtitle: "Router LLM Raphael: topology provider, quota akun, dan biaya")
                 Spacer()
-                if DeviceContext.shared.isAll {
-                    Picker("", selection: $store.selected) {
-                        ForEach(store.instances) { Text($0.name).tag($0.id) }
-                    }
-                    .pickerStyle(.segmented).frame(width: 220).labelsHidden()
-                } else {
+                if !DeviceContext.shared.isAll {
                     RChip(text: DeviceContext.shared.scopeName, tint: RTheme.violet)
                 }
-                if let inst = store.instances.first(where: { $0.id == store.selected }), let url = URL(string: inst.dashboardURL) {
+                if let inst = store.instances.first(where: { $0.id == store.selected }), let link = inst.dashboardURL, let url = URL(string: link) {
                     Button { NSWorkspace.shared.open(url) } label: { Label("Buka dashboard", systemImage: "arrow.up.right.square") }
-                        .buttonStyle(RPillButton(primary: true)).help(inst.dashboardURL)
+                        .buttonStyle(RPillButton(primary: true)).help(link)
                 }
                 Button { store.refreshAll() } label: { Label("Refresh", systemImage: "arrow.clockwise") }
                     .buttonStyle(RPillButton())
             }
+
+            if DeviceContext.shared.isAll && store.instances.count > 1 { instanceStrip }
 
             if let inst = store.instances.first(where: { $0.id == store.selected }) {
                 let snap = store.snapshots[inst.id]
@@ -37,7 +34,8 @@ struct OmniRoutePage: View {
                     RCard {
                         VStack(alignment: .leading, spacing: 10) {
                             Text(snap?.error ?? "Belum dimuat").foregroundStyle(RTheme.red)
-                            Text(inst.baseURL).font(.system(size: 12, design: .monospaced)).foregroundStyle(RTheme.muted)
+                            Text(inst.baseURL.isEmpty ? "Dibaca lewat SSH di \(inst.name) (127.0.0.1:20128)" : inst.baseURL)
+                                .font(.system(size: 12, design: .monospaced)).foregroundStyle(RTheme.muted)
                             HStack {
                                 SecureField("API key OmniRoute untuk \(inst.name)", text: $keyDraft).textFieldStyle(.roundedBorder).frame(width: 340)
                                 Button("Simpan ke Keychain") { store.setKey(keyDraft, for: inst); keyDraft = "" }
@@ -50,6 +48,40 @@ struct OmniRoutePage: View {
             }
         }
         .onAppear { if store.snapshots.isEmpty { store.refreshAll() } }
+    }
+
+    /// Every OmniRoute in one row: pick one to see its details.
+    private var instanceStrip: some View {
+        HStack(spacing: 10) {
+            ForEach(store.instances) { inst in
+                let snap = store.snapshots[inst.id], on = inst.id == store.selected
+                let color = store.loading.contains(inst.id) && snap == nil ? RTheme.muted
+                    : snap?.reachable == true ? (snap!.down > 0 ? RTheme.amber : RTheme.mint) : RTheme.red
+                Button { store.selected = inst.id } label: {
+                    HStack(spacing: 8) {
+                        RStatusDot(color: color)
+                        VStack(alignment: .leading, spacing: 1) {
+                            Text(inst.name).font(.system(size: 12.5, weight: .semibold)).foregroundStyle(RTheme.navy)
+                            Text(statusLine(snap, loading: store.loading.contains(inst.id)))
+                                .font(.system(size: 10.5)).foregroundStyle(RTheme.muted).lineLimit(1)
+                        }
+                    }
+                    .padding(.horizontal, 12).padding(.vertical, 8)
+                    .background(on ? RTheme.violetSoft : RTheme.surface, in: RoundedRectangle(cornerRadius: 10))
+                    .overlay(RoundedRectangle(cornerRadius: 10).stroke(on ? RTheme.violet : RTheme.line))
+                }
+                .buttonStyle(.plain)
+            }
+            Spacer()
+        }
+    }
+
+    private func statusLine(_ s: ORSnapshot?, loading: Bool) -> String {
+        guard let s else { return loading ? "memuat…" : "belum dimuat" }
+        guard s.reachable else { return s.error?.hasPrefix("API key") == true ? "butuh API key" : "tidak berjalan / tidak terjangkau" }
+        var parts = ["\(s.healthy) sehat", "\(s.down) down"]
+        if s.viaSSH { parts.append("lewat SSH") }
+        return parts.joined(separator: " · ")
     }
 
     @ViewBuilder private func content(_ s: ORSnapshot, _ inst: ORInstance) -> some View {

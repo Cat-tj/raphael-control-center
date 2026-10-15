@@ -77,7 +77,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             item.representedObject = MonitorStore.webURL
             sub.addItem(.separator())
         }
-        for inst in OmniRouteStore.shared.instances {
+        for inst in OmniRouteStore.shared.instances where inst.dashboardURL != nil {
             let item = add(sub, "OmniRoute · \(inst.name)", #selector(openLink(_:)))
             item.representedObject = inst.dashboardURL
         }
