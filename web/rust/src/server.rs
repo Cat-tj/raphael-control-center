@@ -2,7 +2,7 @@
 //! Linux box and the desktop app (Tauri) both start it with `start`.
 
 use crate::core::{now, s};
-use crate::{access, clarity, files, hermes, metrics, monitor, operations, workspace};
+use crate::{access, clarity, files, knowledge, hermes, metrics, monitor, operations, workspace};
 use crate::util::log;
 use serde_json::{json, Value};
 use std::io::Read;
@@ -312,6 +312,19 @@ fn handle(app: Arc<App>, mut req: Request) {
             }
             "/api/omniroute" => app.mon.omniroute.lock().unwrap().clone(),
             "/api/clarity" => app.clarity.view(),
+            "/api/knowledge" | "/api/knowledge/file" | "/api/knowledge/graph" => {
+                let home = app.cfg.get("hermesHome").and_then(|h| h.as_str()).unwrap_or("~/.hermes").to_string();
+                let p = q.get("path").cloned().unwrap_or_default();
+                let r = match path.as_str() {
+                    "/api/knowledge" => Ok(knowledge::discover(&home)),
+                    "/api/knowledge/file" => knowledge::read(&home, &p),
+                    _ => knowledge::graph(&home, &p),
+                };
+                match r {
+                    Ok(v) => v,
+                    Err(e) => return json_resp(req, 400, json!({"error": e})),
+                }
+            }
             "/api/files" | "/api/file" => {
                 let nodes = app.cfg["nodes"].as_array().cloned().unwrap_or_default();
                 let Some(node) = nodes.iter().find(|n| q.get("node").map(|w| w == s(n, "id")).unwrap_or(false)) else {
@@ -381,6 +394,15 @@ fn handle(app: Arc<App>, mut req: Request) {
                 let m = app.mon.clone();
                 std::thread::spawn(move || m.refresh_cloudflare());
                 Ok((202, json!({"ok": true})))
+            }
+            (Method::Post, ["api", "knowledge", "file"]) => {
+                let home = app.cfg.get("hermesHome").and_then(|h| h.as_str()).unwrap_or("~/.hermes");
+                let p = body.get("path").and_then(|v| v.as_str()).unwrap_or("");
+                let text = body.get("text").and_then(|v| v.as_str()).ok_or("text wajib diisi")?;
+                match knowledge::write(home, p, text, body.get("mtime").and_then(|v| v.as_f64())) {
+                    Ok(v) => Ok((200, v)),
+                    Err((code, e)) => Ok((code, json!({"error": e}))),
+                }
             }
             (Method::Post, ["api", "clarity"]) => {
                 let st = app.clarity.state.lock().unwrap().clone();

@@ -436,3 +436,28 @@ svg.lchart text { font: 11px -apple-system, BlinkMacSystemFont, sans-serif; fill
 .fpane .viewer { margin: 0; flex: 1; overflow: auto; padding: 14px; border-radius: 0; }
 .spinner { width: 26px; height: 26px; border-radius: 50%; border: 3px solid var(--line); border-top-color: var(--violet); animation: spin 0.9s linear infinite; }
 @keyframes spin { to { transform: rotate(360deg); } }
+
+/* Knowledge */
+.kgsplit { display: grid; grid-template-columns: 250px minmax(0, 1fr); gap: 14px; align-items: start; }
+.knsplit { display: grid; grid-template-columns: 240px minmax(0, 1fr); gap: 14px; align-items: start; }
+@media (max-width: 900px) { .kgsplit, .knsplit { grid-template-columns: 1fr; } }
+.kglist { padding: 12px; }
+.kglist input { width: 100%; }
+.kgitem, .knagent { display: flex; flex-direction: column; gap: 1px; padding: 7px 8px; border-radius: 10px; color: inherit; cursor: pointer; }
+.knagent { flex-direction: row; align-items: center; gap: 9px; }
+.knagent .ico { width: 18px; height: 18px; color: var(--violet); flex: none; display: inline-flex; }
+.knagent .ico svg { width: 18px; height: 18px; }
+.kgitem:hover, .knagent:hover { background: var(--wash); text-decoration: none; }
+.kgitem.on, .knagent.on { background: var(--violet-soft); }
+.knside { padding: 12px; }
+.card .kgtitle { margin: 0; font: 800 20px/1.1 inherit; letter-spacing: -.01em; text-transform: none; color: var(--navy); }
+.kgtitle { margin: 0; font-size: 20px; font-weight: 800; }
+.kgstage { position: relative; height: calc(100vh - 230px); min-height: 420px; border-radius: 18px; overflow: hidden; background: #0b0d18; }
+.kgstage canvas { display: block; width: 100%; height: 100%; cursor: grab; touch-action: none; }
+.kgstage .kgfind { position: absolute; top: 16px; left: 16px; width: min(340px, 70%); background: rgba(255,255,255,.06); color: #E8EBF7; border: 1px solid rgba(255,255,255,.14); border-radius: 12px; padding: 10px 14px; z-index: 2; }
+.kgctl { position: absolute; bottom: 16px; left: 50%; transform: translateX(-50%); display: flex; gap: 8px; z-index: 2; }
+.kgctl button { background: rgba(20,22,40,.9); color: #E8EBF7; border: 1px solid rgba(255,255,255,.16); border-radius: 10px; padding: 8px 14px; cursor: pointer; font-size: 13px; }
+.kgload { position: absolute; inset: 0; display: grid; place-items: center; }
+.kneditor { display: flex; flex-direction: column; gap: 10px; }
+.fchip { border: 0; cursor: pointer; font-family: var(--mono); padding: 5px 10px; font-size: 12px; }
+.kntext { width: 100%; min-height: calc(100vh - 300px); font-size: 13px; line-height: 1.5; padding: 16px; border-radius: 14px; resize: vertical; }

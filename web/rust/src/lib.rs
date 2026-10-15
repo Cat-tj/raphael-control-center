@@ -8,6 +8,7 @@ pub mod core;
 pub mod cron;
 pub mod files;
 pub mod hermes;
+pub mod knowledge;
 pub mod metrics;
 pub mod monitor;
 pub mod native;

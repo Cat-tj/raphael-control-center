@@ -11,6 +11,7 @@ import threading
 import time
 import unittest
 import urllib.error
+import urllib.parse
 import urllib.request
 from datetime import datetime, timedelta, timezone
 from unittest.mock import patch
@@ -245,8 +246,17 @@ class Http(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         d = tempfile.mkdtemp()
+        hh = os.path.join(d, "hermes")
+        os.makedirs(os.path.join(hh, "memories"))
+        with open(os.path.join(hh, "SOUL.md"), "w") as f:
+            f.write("# soul")
+        with open(os.path.join(hh, "memories", "MEMORY.md"), "w") as f:
+            f.write("memory")
+        with open(os.path.join(hh, ".env"), "w") as f:
+            f.write("SECRET_TOKEN=hunter2\n")
+        cls.hermes = hh
         cfg = {"port": free_port(), "data": d, "nodes": [{"id": "local", "name": "Test", "local": True}],
-               "sites": [{"name": "x", "url": "https://example.invalid"}], "envFiles": []}
+               "sites": [{"name": "x", "url": "https://example.invalid"}], "envFiles": [], "hermesHome": hh}
         cls.base = f"http://127.0.0.1:{cfg['port']}"
         cls.external = os.environ.get("RAPHAEL_WEB_BIN")
         if cls.external:
@@ -394,6 +404,26 @@ class Http(unittest.TestCase):
         self.assertEqual(code, 403)
         code, me, _ = self.req("GET", "/api/me", headers={"Tailscale-User-Login": "me@example.test"})
         self.assertEqual((code, me["login"], me["via"]), (200, "me@example.test", "tailnet"))
+
+    def test_knowledge_reads_and_writes_only_soul_and_memory(self):
+        code, k, _ = self.req("GET", "/api/knowledge", headers={})
+        self.assertEqual(code, 200)
+        self.assertEqual(k["agents"][0]["name"], "Raphael")
+        self.assertEqual(k["agents"][0]["env"], ["SECRET_TOKEN"])
+        self.assertNotIn("hunter2", json.dumps(k))                       # .env values never leave the server
+        soul = os.path.join(self.hermes, "SOUL.md")
+        code, f, _ = self.req("GET", "/api/knowledge/file?path=" + urllib.parse.quote(soul), headers={})
+        self.assertEqual((code, f["text"]), (200, "# soul"))
+        code, _, _ = self.req("GET", "/api/knowledge/file?path=" + urllib.parse.quote(os.path.join(self.hermes, ".env")), headers={})
+        self.assertEqual(code, 400)
+        code, _, _ = self.req("POST", "/api/knowledge/file", {"path": "/etc/passwd", "text": "x"})
+        self.assertEqual(code, 400)
+        code, _, _ = self.req("POST", "/api/knowledge/file", {"path": soul, "text": "x", "mtime": 1})
+        self.assertEqual(code, 409)
+        code, w, _ = self.req("POST", "/api/knowledge/file", {"path": soul, "text": "# new", "mtime": f["mtime"]})
+        self.assertEqual((code, w["text"]), (200, "# new"))
+        with open(soul + ".raphael.bak") as b:
+            self.assertEqual(b.read(), "# soul")
 
 
 class Clarity(unittest.TestCase):

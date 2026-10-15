@@ -38,6 +38,7 @@ import access  # noqa: E402
 import core  # noqa: E402
 import files  # noqa: E402
 import hermes  # noqa: E402
+import knowledge  # noqa: E402
 from workspace import Workspace, WorkspaceError  # noqa: E402
 
 VERSION = "0.1.0"
@@ -707,6 +708,14 @@ def make_handler(app: App):
                     return self._json(200, app.monitor.omniroute)
                 if u.path == "/api/clarity":
                     return self._json(200, app.clarity.view())
+                if u.path in ("/api/knowledge", "/api/knowledge/file", "/api/knowledge/graph"):
+                    home = app.cfg.get("hermesHome", "~/.hermes")
+                    try:
+                        r = knowledge.discover(home) if u.path == "/api/knowledge" else knowledge.read(home, q.get("path", "")) \
+                            if u.path == "/api/knowledge/file" else knowledge.graph(home, q.get("path", ""))
+                    except (ValueError, OSError) as e:
+                        return self._json(400, {"error": str(e)})
+                    return self._json(200, r)
                 if u.path in ("/api/files", "/api/file"):
                     node = next((n for n in app.cfg["nodes"] if n["id"] == q.get("node")), None)
                     if not node:
@@ -789,6 +798,15 @@ def make_handler(app: App):
                         r = app.ops.action(body.get("node", ""), body.get("kind", ""), body.get("target", ""), self.user or "")
                     except ValueError as e:
                         raise WorkspaceError(str(e))
+                    return self._json(200, r)
+                if parts == ["api", "knowledge", "file"] and method == "POST":
+                    try:
+                        r = knowledge.write(app.cfg.get("hermesHome", "~/.hermes"), body.get("path", ""), body.get("text"), body.get("mtime"))
+                    except ValueError as e:
+                        code, msg = (e.args + (None,))[:2] if len(e.args) == 2 else (400, str(e))
+                        return self._json(code, {"error": msg})
+                    except (OSError, TypeError) as e:
+                        return self._json(400, {"error": str(e)})
                     return self._json(200, r)
                 if parts[:2] == ["api", "clarity"] and method == "POST":
                     import clarity

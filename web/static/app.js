@@ -30,7 +30,7 @@ const NAV = [
   ["Workspace", [["overview", "house", "Overview"], ["portfolio", "grid", "Portfolio"], ["tasks", "me", "My Work"]]],
   ["Development", [["projects", "folderGear", "Projects"], ["activity", "history", "Activity"]]],
   ["Operations", [["monitor", "pulse", "Monitor"], ["servers", "server", "Infrastruktur"], ["websites", "apps", "Aplikasi & Website"], ["files", "folder", "File"]]],
-  ["Intelligence", [["agents", "chart", "Agents & Token"], ["omniroute", "route", "OmniRoute"]]],
+  ["Intelligence", [["agents", "chart", "Agents & Token"], ["omniroute", "route", "OmniRoute"], ["knowledge", "brain", "Knowledge"]]],
 ];
 
 
@@ -158,7 +158,7 @@ function render() {
   const main = $("#main");
   if (!S.state && !S.error) { main.innerHTML = `<div class="empty"><b>Memuat…</b></div>`; return; }
   if (S.error && !S.state) { main.innerHTML = `<div class="empty"><b>Server tidak menjawab</b>${esc(S.error)}</div>`; return; }
-  const pages = { overview, monitor: monitorPage, servers: infra, websites: appsAndSites, files: filesPage, agents, omniroute, portfolio, project: projectsPage, projects: projectsPage, tasks, activity };
+  const pages = { overview, monitor: monitorPage, servers: infra, websites: appsAndSites, files: filesPage, agents, omniroute, knowledge: knowledgePage, portfolio, project: projectsPage, projects: projectsPage, tasks, activity };
   const keep = document.activeElement && document.activeElement.id ? document.activeElement.id : null;
   const scroll = window.scrollY;
   main.innerHTML = (pages[S.route] || overview)();
@@ -168,6 +168,7 @@ function render() {
   if (mtab === "servers") drawServerSparks();
   if (S.route === "project") wireBoard();
   if (S.route === "agents") loadAgents();
+  if (S.route === "knowledge") { loadKnowledge(); if ((S.filters.kntab || "graph") === "graph") loadKnGraph(); }
   if (S.route === "omniroute") loadOmni();
   if (S.route === "files") loadFiles();
   if (mtab === "incidents") loadIncidents();
@@ -451,6 +452,143 @@ function activity() {
     <div class="ellipsis" style="flex:1"><span class="small">${esc(a.title)}</span><div class="tiny muted">${esc(a.project_name || "")} · ${esc(a.source)}</div></div><span class="small muted">${ago(a.ts)}</span></div>`).join("");
   return head("Activity", "Semua kejadian dari task, GitHub, CI/deploy, Monitor dan agent, berurutan") + ctl +
     `<div class="card">${rows ? `<div class="list">${rows}</div>` : emptyState("history", "Belum ada aktivitas", "Aktivitas muncul saat task berubah, dan dari repo/Vercel/aplikasi yang ditautkan ke project.")}</div>`;
+}
+
+// ── Knowledge (KnowledgeView): graphs, SOUL, .env names and memory of the server's Hermes agents ──
+ICON.brain = '<path d="M9 4.5a3 3 0 0 0-3 3v.3A3.2 3.2 0 0 0 4 10.8a3.2 3.2 0 0 0 1 2.4A3.3 3.3 0 0 0 8 18.5a2.5 2.5 0 0 0 4 1V5.6A2.5 2.5 0 0 0 9 4.5Z"/><path d="M15 4.5a3 3 0 0 1 3 3v.3a3.2 3.2 0 0 1 2 3 3.2 3.2 0 0 1-1 2.4 3.3 3.3 0 0 1-3 5.3 2.5 2.5 0 0 1-4 1V5.6a2.5 2.5 0 0 1 3-1.1Z"/>';
+ICON.person = '<circle cx="12" cy="12" r="8.5"/><circle cx="12" cy="10" r="3"/><path d="M6.5 18.2c1.2-2 3.2-3 5.5-3s4.3 1 5.5 3"/>';
+const KN_TABS = [["graph", "Knowledge Graph"], ["soul", "Soul"], ["env", ".env"], ["memory", "Memory"]];
+async function loadKnowledge(force) {
+  if (S.knLoading || (S.kn && !force)) return;
+  S.knLoading = true;
+  try { S.kn = await api("GET", "/api/knowledge"); } catch (e) { S.kn = { error: e.message }; }
+  finally { S.knLoading = false; if (S.route === "knowledge") render(); }
+}
+async function loadKnFile(path) {
+  S.knFile = { path, loading: true };
+  render();
+  try { const f = await api("GET", `/api/knowledge/file?path=${encodeURIComponent(path)}`); S.knFile = f; S.knDraft = f.text; }
+  catch (e) { S.knFile = { path, error: e.message }; }
+  if (S.route === "knowledge") render();
+}
+function knowledgePage() {
+  const tab = S.filters.kntab || "graph", kn = S.kn;
+  const tabs = `<div class="seg">${KN_TABS.map(([v, t]) => `<button class="${tab === v ? "on" : ""}" data-act="kntab" data-v="${v}">${t}</button>`).join("")}</div>`;
+  const hd = head("Knowledge", "Knowledge graph, SOUL, .env dan memory setiap agent & bot", tabs);
+  if (!kn) return hd + '<div class="card"><div class="fempty"><div class="spinner"></div></div></div>';
+  if (kn.error) return hd + `<div class="card red">${esc(kn.error)}</div>`;
+  const server = (S.state.nodes.find((n) => n.local) || {}).name || "Server ini";
+  if (tab === "graph") {
+    const q = (S.filters.kgq || "").toLowerCase(), gs = kn.graphs.filter((g) => !q || g.name.toLowerCase().includes(q));
+    const sel = kn.graphs.find((g) => g.path === S.filters.kgpath) || kn.graphs[0];
+    const list = `<div class="card kglist"><input type="search" id="kgq" placeholder="Cari graph…" value="${esc(S.filters.kgq || "")}">
+      <div class="lbl" style="margin:12px 4px 6px">Graph di ${esc(server)} · ${kn.graphs.length}</div>
+      ${gs.map((g) => `<a class="kgitem ${sel && g.path === sel.path ? "on" : ""}" data-act="kgsel" data-v="${esc(g.path)}"><b>${esc(g.name)}</b><span class="tiny muted">${esc(server)} · ${num(g.nodes)} node</span></a>`).join("") || '<div class="small muted" style="padding:8px">Belum ada graph.</div>'}
+      <p class="tiny muted" style="margin:12px 4px 0">Graph proyek yang dibuat di Mac tersimpan di Mac. Di sini tampil graph yang ada di server ini.</p></div>`;
+    const g = S.knGraph && sel && S.knGraph.path === sel.path ? S.knGraph : null;
+    const viewer = !sel ? `<div class="card">${emptyState("brain", "Belum ada knowledge graph", "Graph dibuat dengan graphify (di app Mac: Knowledge → Buat). Graph yang tersimpan di server ini akan muncul di sini.")}</div>`
+      : `<div class="kgview"><div class="row" style="margin-bottom:10px"><div><h2 class="kgtitle">${esc(sel.name)}</h2><div class="tiny muted">${num(sel.nodes)} node · ${num(sel.links)} relasi${g && g.total > g.nodes.length ? ` · ${num(g.nodes.length)} ditampilkan` : ""}</div></div></div>
+        <div class="kgstage"><input type="search" id="kgfind" class="kgfind" placeholder="Find a node…" value="${esc(S.filters.kgfind || "")}"><canvas id="kgcanvas"></canvas>
+          <div class="kgctl"><button data-act="kgfit">Fit all</button><button data-act="kgzoom" data-v="1.25">+</button><button data-act="kgzoom" data-v="0.8">−</button></div>
+          ${!g ? '<div class="kgload"><div class="spinner"></div></div>' : ""}</div></div>`;
+    return hd + `<div class="kgsplit">${list}${viewer}</div>`;
+  }
+  const agents = kn.agents, agent = agents.find((a) => a.id === S.filters.knagent) || agents[0];
+  const side = `<div class="card knside"><div class="lbl" style="margin:2px 4px 8px">Agent & bot</div><div class="small" style="color:var(--violet);font-weight:650;margin:0 4px 6px">${esc(server)}</div>
+    ${agents.map((a) => `<a class="knagent ${agent && a.id === agent.id ? "on" : ""}" data-act="knagent" data-v="${esc(a.id)}"><span class="ico">${icon("person")}</span><div style="min-width:0"><div class="small" style="font-weight:600">${esc(a.name)}</div><div class="tiny mono muted ellipsis">${esc(a.home)}</div></div></a>`).join("")}</div>`;
+  let main;
+  if (!agent) main = `<div class="card">${emptyState("person", "Hermes tidak ditemukan", "Tidak ada ~/.hermes di server ini.")}</div>`;
+  else if (tab === "env") {
+    main = `<div class="card"><div class="row"><span class="lbl">${esc(agent.envPath.replace(/^\/home\/[^/]+/, "~"))}</span><span class="spacer"></span><span class="chip">${agent.env.length} variabel</span></div>
+      <div class="list" style="margin-top:8px">${agent.env.map((k) => `<div class="item"><span class="mono small" style="flex:1">${esc(k)}</span><span class="mono small muted">••••••••</span></div>`).join("") || '<div class="small muted">File .env belum ada.</div>'}</div>
+      <p class="tiny muted" style="margin:12px 0 0">Isi .env tidak pernah dikirim ke browser. Tambah atau ubah nilainya lewat app Raphael di Mac (Knowledge → .env).</p></div>`;
+  } else {
+    const files = tab === "soul" ? agent.soul : agent.memory;
+    const cur = files.find((f) => f.path === (S.knFile && S.knFile.path)) || files[0];
+    if (cur && (!S.knFile || S.knFile.path !== cur.path) && !(S.knFile && S.knFile.loading)) setTimeout(() => loadKnFile(cur.path));
+    const f = S.knFile && cur && S.knFile.path === cur.path ? S.knFile : null;
+    const draft = f && !f.loading && !f.error ? S.knDraft ?? f.text : "";
+    const dirty = f && f.text != null && draft !== f.text;
+    main = !cur ? `<div class="card">${emptyState(tab === "soul" ? "person" : "brain", tab === "soul" ? "Agent ini belum punya SOUL.md" : "Belum ada memory", "")}</div>`
+      : `<div class="kneditor"><div class="row wrap" style="gap:8px">${files.map((x) => `<button class="chip fchip ${x.path === cur.path ? "v" : ""}" data-act="knfile" data-v="${esc(x.path)}">${esc(x.name)}</button>`).join("")}<span class="spacer"></span>
+          ${f && f.text != null ? `<span class="chip warn">±${compact(Math.round(draft.length / 4))} token</span>` : ""}<button class="btn primary" data-act="knsave" ${dirty ? "" : "disabled"}>Simpan</button></div>
+        ${!f || f.loading ? '<div class="card"><div class="fempty"><div class="spinner"></div></div></div>' : f.error ? `<div class="card red">${esc(f.error)}</div>` : `<textarea id="kntext" class="kntext mono" spellcheck="false">${esc(draft)}</textarea>`}
+        <p class="tiny muted" style="margin:0">Isi SOUL dan memory dikirim ke model di setiap panggilan: makin ringkas, makin hemat token. Versi sebelumnya disimpan sebagai .raphael.bak.</p></div>`;
+  }
+  return hd + `<div class="knsplit">${side}${main}</div>`;
+}
+async function loadKnGraph() {
+  const kn = S.kn; if (!kn || !kn.graphs) return;
+  const sel = kn.graphs.find((g) => g.path === S.filters.kgpath) || kn.graphs[0];
+  if (!sel) return;
+  if (!S.knGraph || S.knGraph.path !== sel.path) {
+    if (S.knGraphLoading === sel.path) return;
+    S.knGraphLoading = sel.path;
+    try { S.knGraph = await api("GET", `/api/knowledge/graph?path=${encodeURIComponent(sel.path)}`); layoutGraph(S.knGraph); }
+    catch (e) { toast(e.message, true); }
+    S.knGraphLoading = null;
+    if (S.route === "knowledge") render();
+    return;
+  }
+  drawGraph();
+}
+/** Force-directed layout (repulsion + springs + gravity), computed once per graph. */
+function layoutGraph(g) {
+  const n = g.nodes.length, idx = new Map(g.nodes.map((x, i) => [JSON.stringify(x.id), i]));
+  const P = g.nodes.map((_, i) => ({ x: Math.cos(i * 2.4) * Math.sqrt(i + 1) * 30, y: Math.sin(i * 2.4) * Math.sqrt(i + 1) * 30, vx: 0, vy: 0 }));
+  const E = g.links.map((l) => [idx.get(JSON.stringify(l.source)), idx.get(JSON.stringify(l.target))]).filter(([a, b]) => a != null && b != null && a !== b);
+  const deg = new Array(n).fill(0); E.forEach(([a, b]) => { deg[a]++; deg[b]++; });
+  const iters = n > 1500 ? 120 : n > 400 ? 220 : 320, sample = n > 900;
+  for (let it = 0; it < iters; it++) {
+    const t = 1 - it / iters;
+    for (let i = 0; i < n; i++) {
+      const pi = P[i], m = sample ? 160 : n;
+      for (let k = 0; k < m; k++) {
+        const j = sample ? (Math.random() * n) | 0 : k; if (j === i) continue;
+        const dx = pi.x - P[j].x, dy = pi.y - P[j].y, d2 = dx * dx + dy * dy + 0.01, f = (sample ? n / m : 1) * 900 / d2;
+        pi.vx += dx * f; pi.vy += dy * f;
+      }
+      pi.vx -= pi.x * 0.01; pi.vy -= pi.y * 0.01;
+    }
+    for (const [a, b] of E) { const dx = P[b].x - P[a].x, dy = P[b].y - P[a].y, d = Math.sqrt(dx * dx + dy * dy) + 0.01, f = (d - 40) * 0.04; P[a].vx += dx / d * f; P[a].vy += dy / d * f; P[b].vx -= dx / d * f; P[b].vy -= dy / d * f; }
+    for (const p of P) { const v = Math.hypot(p.vx, p.vy), cap = 30 * t + 1; if (v > cap) { p.vx *= cap / v; p.vy *= cap / v; } p.x += p.vx; p.y += p.vy; p.vx *= 0.5; p.vy *= 0.5; }
+  }
+  g.P = P; g.E = E; g.deg = deg; g.view = null;
+}
+function drawGraph() {
+  const g = S.knGraph, cv = $("#kgcanvas");
+  if (!g || !g.P || !cv) return;
+  const r = cv.parentElement.getBoundingClientRect(), dpr = window.devicePixelRatio || 1;
+  cv.width = r.width * dpr; cv.height = r.height * dpr; cv.style.width = r.width + "px"; cv.style.height = r.height + "px";
+  const ctx = cv.getContext("2d"); ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  if (!g.view) { const xs = g.P.map((p) => p.x), ys = g.P.map((p) => p.y), w = Math.max(...xs) - Math.min(...xs) + 80, h = Math.max(...ys) - Math.min(...ys) + 80;
+    g.view = { k: Math.min(r.width / w, r.height / h, 2.5), cx: (Math.max(...xs) + Math.min(...xs)) / 2, cy: (Math.max(...ys) + Math.min(...ys)) / 2 }; }
+  const v = g.view, X = (p) => (p.x - v.cx) * v.k + r.width / 2, Y = (p) => (p.y - v.cy) * v.k + r.height / 2;
+  const find = (S.filters.kgfind || "").toLowerCase(), hit = find ? new Set(g.nodes.map((n, i) => String(n.label).toLowerCase().includes(find) ? i : -1).filter((i) => i >= 0)) : null;
+  ctx.fillStyle = "#0b0d18"; ctx.fillRect(0, 0, r.width, r.height);
+  ctx.lineWidth = 0.6; ctx.strokeStyle = "rgba(200,205,235,.18)"; ctx.beginPath();
+  for (const [a, b] of g.E) { ctx.moveTo(X(g.P[a]), Y(g.P[a])); ctx.lineTo(X(g.P[b]), Y(g.P[b])); }
+  ctx.stroke();
+  const colors = ["#9D86F5", "#34D399", "#6EA4FA", "#D77ADF", "#F5B13D", "#22D3EE", "#F4707A", "#818CF8", "#A3E635"];
+  g.nodes.forEach((n, i) => { const p = g.P[i], rad = Math.min(7, 1.6 + Math.sqrt(g.deg[i]) * 0.9);
+    ctx.globalAlpha = hit && !hit.has(i) ? 0.15 : 1; ctx.fillStyle = colors[Math.abs(Number(n.community) || 0) % colors.length];
+    ctx.beginPath(); ctx.arc(X(p), Y(p), rad, 0, 6.283); ctx.fill(); });
+  ctx.globalAlpha = 1;
+  const top = g.nodes.map((n, i) => i).sort((a, b) => g.deg[b] - g.deg[a]).slice(0, Math.min(14, Math.max(4, (r.width / 120) | 0)));
+  const labels = hit && hit.size ? [...hit].slice(0, 30) : top;
+  ctx.font = "12px ui-monospace, SFMono-Regular, Menlo, monospace"; ctx.textBaseline = "middle";
+  for (const i of labels) { const p = g.P[i], t = String(g.nodes[i].label).slice(0, 32), w = ctx.measureText(t).width + 16, x = X(p) - w / 2, y = Y(p) - 26;
+    ctx.fillStyle = "rgba(10,12,24,.92)"; ctx.strokeStyle = "rgba(255,255,255,.22)"; ctx.lineWidth = 1;
+    ctx.beginPath(); ctx.roundRect ? ctx.roundRect(x, y, w, 24, 6) : ctx.rect(x, y, w, 24); ctx.fill(); ctx.stroke();
+    ctx.fillStyle = "#E8EBF7"; ctx.fillText(t, x + 8, y + 12); }
+  if (!cv.dataset.wired) {
+    cv.dataset.wired = "1";
+    let drag = null;
+    cv.addEventListener("wheel", (e) => { e.preventDefault(); const gv = S.knGraph && S.knGraph.view; if (!gv) return; gv.k *= e.deltaY < 0 ? 1.12 : 0.89; drawGraph(); }, { passive: false });
+    cv.addEventListener("pointerdown", (e) => { drag = { x: e.clientX, y: e.clientY }; cv.setPointerCapture(e.pointerId); });
+    cv.addEventListener("pointermove", (e) => { const gv = S.knGraph && S.knGraph.view; if (!drag || !gv) return; gv.cx -= (e.clientX - drag.x) / gv.k; gv.cy -= (e.clientY - drag.y) / gv.k; drag = { x: e.clientX, y: e.clientY }; drawGraph(); });
+    cv.addEventListener("pointerup", () => { drag = null; });
+  }
 }
 
 // ── Overview ──
@@ -1251,6 +1389,16 @@ document.addEventListener("click", (e) => {
   else if (act === "view") { S.filters.view = v; render(); }
   else if (act === "newProject") projectDialog(null);
   else if (act === "discover") toast("Penemuan project (dari ~/Projects, GitHub, Vercel dan Monitor) berjalan di app Mac; hasilnya tersinkron ke sini.");
+  else if (act === "kntab") { S.filters.kntab = v; S.knFile = null; S.knDraft = null; render(); }
+  else if (act === "knagent") { if (S.knDraft != null && S.knFile && S.knDraft !== S.knFile.text && !confirm("Perubahan belum disimpan. Tinggalkan?")) return; S.filters.knagent = v; S.knFile = null; S.knDraft = null; render(); }
+  else if (act === "knfile") { if (S.knDraft != null && S.knFile && S.knDraft !== S.knFile.text && !confirm("Perubahan belum disimpan. Tinggalkan?")) return; S.knDraft = null; loadKnFile(v); }
+  else if (act === "knsave") {
+    const f = S.knFile;
+    api("POST", "/api/knowledge/file", { path: f.path, text: S.knDraft, mtime: f.mtime }).then((r) => { S.knFile = r; S.knDraft = r.text; toast("Tersimpan · versi lama di .raphael.bak"); loadKnowledge(true); }).catch((x) => toast(x.message, true));
+  }
+  else if (act === "kgsel") { S.filters.kgpath = v; render(); }
+  else if (act === "kgfit") { if (S.knGraph) { S.knGraph.view = null; drawGraph(); } }
+  else if (act === "kgzoom") { if (S.knGraph && S.knGraph.view) { S.knGraph.view.k *= Number(v); drawGraph(); } }
   else if (act === "costRange") { S.filters.costRange = Number(v); render(); }
   else if (act === "pview") { S.filters.pview = v; render(); }
   else if (act === "akind") { S.filters.akind = v; render(); }
@@ -1279,6 +1427,9 @@ document.addEventListener("keydown", (e) => {
 });
 document.addEventListener("input", (e) => {
   if (e.target.id === "jobq") { S.filters.jobq = e.target.value; render(); }
+  if (e.target.id === "kntext") { S.knDraft = e.target.value; const b = $('[data-act="knsave"]'); if (b) b.disabled = S.knDraft === (S.knFile || {}).text; return; }
+  if (e.target.id === "kgfind") { S.filters.kgfind = e.target.value; drawGraph(); return; }
+  if (e.target.id === "kgq") { S.filters.kgq = e.target.value; render(); return; }
   if (e.target.id === "ffilter") { S.files.filter = e.target.value; render(); }
   if (e.target.id === "pq" || e.target.id === "prq") { S.filters[e.target.id] = e.target.value; render(); }
   if (e.target.id === "meName") { try { localStorage.setItem("raphaelMe", e.target.value.trim() || "Saya"); } catch { /* ignore */ } render(); }
