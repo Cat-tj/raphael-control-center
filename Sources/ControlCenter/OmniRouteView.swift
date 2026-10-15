@@ -47,7 +47,10 @@ struct OmniRoutePage: View {
                 }
             }
         }
-        .onAppear { if store.snapshots.isEmpty { store.refreshAll() } }
+        .onAppear {
+            store.discover()
+            store.instances.filter { store.snapshots[$0.id] == nil }.forEach(store.refresh)
+        }
     }
 
     /// Every OmniRoute in one row: pick one to see its details.

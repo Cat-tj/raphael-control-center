@@ -164,6 +164,7 @@ final class OmniRouteStore: ObservableObject {
 
     /// Follow the device switcher: the Mac shows its own OmniRoute, a RasPi its own.
     func followDevice() {
+        discover()
         let id = DeviceContext.shared.currentId
         let target = DeviceContext.shared.current.isLocal ? "local" : id
         if instances.contains(where: { $0.id == target }) {
