@@ -699,6 +699,19 @@ class Ops(unittest.TestCase):
         self.assertIn("internet", offline)
         self.assertFalse(any(k.startswith("site:") for k in offline))       # website status held while offline
 
+    def test_watchdog_conditions(self):
+        raw = {"id": "meet", "name": "Meet", "checked": BASE - 30, "ok": True, "restarts": 2,
+               "lastRestart": {"at": BASE - 100, "reason": "UDP tidak terbuka"}, "history": [{"at": BASE - 100, "event": "restart", "reason": "x"}] * 15}
+        w = core.watchdog(raw)
+        self.assertEqual((w["restarts"], len(w["history"]), w["lastRestart"]["reason"]), (2, 10, "UDP tidak terbuka"))
+        self.assertEqual(ops.watchdog_condition(w, BASE), ("Meet di-restart watchdog", "UDP tidak terbuka"))
+        self.assertIsNone(ops.watchdog_condition(w, BASE + 400))                              # restart is old and checks pass again
+        self.assertEqual(ops.watchdog_condition(dict(w, ok=False, problem="unit tidak aktif"), BASE + 400), ("Meet bermasalah", "unit tidak aktif"))
+        self.assertEqual(ops.watchdog_condition(w, BASE + 1200)[0], "Watchdog Meet tidak melapor")
+        d = core.parse(dict(Parse.SAMPLE, watchdogs=[raw]), now=BASE)
+        c = self.conds(details={"a": d})
+        self.assertEqual(c["watchdog:a:meet"]["kind"], "watchdog")
+
     def test_tracker_hysteresis_and_message(self):
         tr = ops.Tracker()
         site = {"site:https://s": {"kind": "site", "node": "S", "title": "S down", "detail": "HTTP 502"}}

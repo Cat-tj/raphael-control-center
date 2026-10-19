@@ -213,6 +213,16 @@ for home in [os.path.expanduser('~/.hermes')] + [os.path.join(os.path.expanduser
                      "workdir": jb.get('workdir') or '', "history": hist.get(jb.get('id'), []), "system": False})
 o["jobs"] = jobs
 o["failed"] = [l.split()[0] for l in sh("systemctl --failed --no-legend --plain 2>/dev/null; systemctl --user --failed --no-legend --plain 2>/dev/null").splitlines() if l.strip()]
+# Watchdog status files (~/.local/state/raphael/watchdogs/<id>.json, written by the watchdog scripts).
+wdir = os.path.expanduser('~/.local/state/raphael/watchdogs')
+wds = []
+for fn in sorted(os.listdir(wdir)) if os.path.isdir(wdir) else []:
+    if not fn.endswith('.json'): continue
+    try: w = json.load(open(os.path.join(wdir, fn)))
+    except Exception: continue
+    if isinstance(w, dict):
+        w["id"] = fn[:-5]; w["history"] = (w.get("history") or [])[:10]; wds.append(w)
+o["watchdogs"] = wds
 # cloudflared tunnel metrics (Prometheus endpoint on localhost)
 if 'cloudflared' in sh('ps -eo comm'):
     ports = set(re.findall(r'127\.0\.0\.1:(\d+).*cloudflared', sh('sudo -n ss -ltnp 2>/dev/null')))

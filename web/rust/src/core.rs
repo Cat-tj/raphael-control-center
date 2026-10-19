@@ -146,6 +146,15 @@ pub fn container_healthy(status: &str) -> bool {
 }
 
 /// Collector JSON → one detail record (what the latest sample said).
+pub fn watchdog(w: &Value) -> Value {
+    let lr = w.get("lastRestart").filter(|v| v.is_object()).map(|r| json!({"at": f(r, "at"), "reason": s(r, "reason")})).unwrap_or(Value::Null);
+    let history: Vec<Value> = arr(w, "history").iter().filter(|h| h.is_object()).take(10)
+        .map(|h| json!({"at": f(h, "at"), "event": s(h, "event"), "reason": s(h, "reason")})).collect();
+    json!({"id": s(w, "id"), "name": if s(w, "name").is_empty() { s(w, "id") } else { s(w, "name") }, "unit": s(w, "unit"), "url": s(w, "url"),
+           "checked": f(w, "checked"), "ok": b(w, "ok"), "problem": s(w, "problem"), "restarts": f(w, "restarts") as i64,
+           "lastOk": f(w, "lastOk"), "lastRestart": lr, "history": history})
+}
+
 pub fn parse(j: &Value, now: f64, previous: Option<&Value>, slow: bool) -> Value {
     let disks: Vec<Value> = arr(j, "disks")
         .iter()
@@ -195,6 +204,7 @@ pub fn parse(j: &Value, now: f64, previous: Option<&Value>, slow: bool) -> Value
         "topCPU": procs("topCPU"), "topMem": procs("topMem"), "containers": containers,
         "failed": j.get("failed").cloned().unwrap_or(json!([])), "ips": j.get("ips").cloned().unwrap_or(json!([])), "tz": tz,
         "jobs": jobs, "services": services, "routes": routes, "tunnel": null,
+        "watchdogs": arr(j, "watchdogs").iter().filter(|w| w.is_object()).map(watchdog).collect::<Vec<Value>>(),
         "hw": if j.get("hw").map(|h| h.is_object()).unwrap_or(false) { j["hw"].clone() } else { previous.and_then(|p| p.get("hw")).cloned().unwrap_or(Value::Null) },
     });
     let m = d.as_object_mut().unwrap();

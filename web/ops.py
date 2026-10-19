@@ -14,7 +14,24 @@ CLOSE_HOLD = {"power": 10, "temp": 5, "site": 1, "node": 1}
 # A recurrence within this window is still recorded but not sent again.
 COOLDOWN = {"power": 6 * 3600, "temp": 6 * 3600, "sdcard": 24 * 3600, "ssl": 24 * 3600, "disk": 6 * 3600}
 EMOJI = {"site": "🌐", "node": "🖥", "temp": "🌡", "power": "⚡", "disk": "💾", "job": "⏰", "ssl": "🔒", "backup": "🗄",
-         "internet": "📡", "reboot": "🔁", "sdcard": "💽", "report": "📊"}
+         "internet": "📡", "reboot": "🔁", "sdcard": "💽", "watchdog": "🛟", "report": "📊"}
+
+
+# A watchdog restart stays an incident this long (the service is usually back within a minute).
+WATCHDOG_RESTART_WINDOW = 300
+WATCHDOG_STALE = 600
+
+
+def watchdog_condition(w: dict, now: float):
+    """(title, detail) when a watchdog reports a problem, restarted its service recently or went quiet."""
+    lr = w.get("lastRestart") or {}
+    if now - (w.get("checked") or 0) > WATCHDOG_STALE:
+        return f"Watchdog {w['name']} tidak melapor", f"cek terakhir {duration(now - w['checked'])} lalu" if w.get("checked") else ""
+    if lr.get("at") and now - lr["at"] < WATCHDOG_RESTART_WINDOW:
+        return f"{w['name']} di-restart watchdog", lr.get("reason") or ""
+    if not w.get("ok"):
+        return f"{w['name']} bermasalah", w.get("problem") or ""
+    return None
 
 
 def conditions(nodes: list, details: dict, last: dict, sites: list, site_status: dict, certs: dict,
@@ -53,6 +70,10 @@ def conditions(nodes: list, details: dict, last: dict, sites: list, site_status:
                 add(f"job:{n['id']}|{j['id']}", "job", name, f"Job {j['name']} gagal", j.get("detail") or "")
             elif j.get("health") == "missed":
                 add(f"job:{n['id']}|{j['id']}", "job", name, f"Job {j['name']} tidak jalan sesuai jadwal", j.get("scheduleText") or "")
+        for w in d.get("watchdogs") or []:
+            c = watchdog_condition(w, now)
+            if c:
+                add(f"watchdog:{n['id']}:{w['id']}", "watchdog", name, *c)
         h = health.get(n["id"]) or {}
         if h.get("rootRO"):
             add(f"sdcard:{n['id']}", "sdcard", name, f"Filesystem / di {name} read-only", "Biasanya tanda kartu SD/SSD bermasalah")

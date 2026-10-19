@@ -229,6 +229,16 @@ def container_healthy(status: str) -> bool:
     return status.startswith("Up") and "unhealthy" not in status and "Restarting" not in status
 
 
+def watchdog(w: dict) -> dict:
+    lr = w.get("lastRestart") if isinstance(w.get("lastRestart"), dict) else None
+    return {"id": w.get("id") or "", "name": w.get("name") or w.get("id") or "", "unit": w.get("unit") or "", "url": w.get("url") or "",
+            "checked": float(w.get("checked") or 0), "ok": bool(w.get("ok")), "problem": w.get("problem") or "",
+            "restarts": int(w.get("restarts") or 0), "lastOk": float(w.get("lastOk") or 0),
+            "lastRestart": {"at": float(lr.get("at") or 0), "reason": lr.get("reason") or ""} if lr else None,
+            "history": [{"at": float(h.get("at") or 0), "event": h.get("event") or "", "reason": h.get("reason") or ""}
+                        for h in (w.get("history") or [])[:10] if isinstance(h, dict)]}
+
+
 def parse(j: dict, now: float | None = None, previous: dict | None = None, slow: bool = True) -> dict:
     """Collector JSON → one detail record (what the latest sample said)."""
     now = time.time() if now is None else now
@@ -256,6 +266,7 @@ def parse(j: dict, now: float | None = None, previous: dict | None = None, slow:
                       "desc": v.get("desc") or "", "running": v.get("state") == "active"} for v in j.get("services") or []],
         "routes": [{"hosts": r.get("hosts") or [], "proxy": r.get("proxy"), "root": r.get("root")} for r in j.get("caddy") or []],
         "tunnel": None, "hw": j.get("hw") if isinstance(j.get("hw"), dict) else (previous or {}).get("hw"),
+        "watchdogs": [watchdog(w) for w in j.get("watchdogs") or [] if isinstance(w, dict)],
     }
     for k, jk in (("updates", "updates"), ("securityUpdates", "security"), ("sshFails", "sshFails"), ("rebootRequired", "reboot")):
         d[k] = j.get(jk) if slow else (previous or {}).get(k)

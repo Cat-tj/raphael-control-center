@@ -201,7 +201,7 @@ function infra() {
       meterRow("CPU", `load ${(l.load || 0).toFixed(2)} · ${cores} core`, (l.load || 0) / cores / 1.5) +
       meterRow("RAM", `${pctTxt(l.mem)} dari ${d.memTotalGB ? d.memTotalGB.toFixed(1) + " GB" : "–"}`, l.mem) +
       meterRow("Disk", `${pctTxt(l.disk)} dari ${disk.totalGB ? Math.round(disk.totalGB) + " GB" : "–"}`, l.disk) +
-      `<div class="row wrap" style="gap:6px;margin-top:4px"><span class="chip">up ${upTxt(d.uptime)}</span>${l.temp != null ? `<span class="chip ${l.temp > 75 ? "bad" : ""}">${Math.round(l.temp)}°C</span>` : ""}<span class="chip ${down ? "bad" : "ok"}">${apps.length} app</span>${l.thr ? '<span class="chip warn">throttled</span>' : ""}</div>`;
+      `<div class="row wrap" style="gap:6px;margin-top:4px"><span class="chip">up ${upTxt(d.uptime)}</span>${l.temp != null ? `<span class="chip ${l.temp > 75 ? "bad" : ""}">${Math.round(l.temp)}°C</span>` : ""}<span class="chip ${down ? "bad" : "ok"}">${apps.length} app</span>${l.thr ? '<span class="chip warn">throttled</span>' : ""}${(d.watchdogs || []).map((w) => { const [c, t] = wdState(w); return `<span class="chip ${c}" title="watchdog · cek terakhir ${ago(w.checked)}">${esc(w.name)}: ${t}</span>`; }).join("")}</div>`;
     return `<div class="card ncard"><div class="row" style="align-items:flex-start"><span class="tile">${icon("server")}</span>
         <div style="flex:1;min-width:0"><b>${esc(n.name)}</b><div class="small ellipsis" style="color:var(--ink2)">${esc(hwSummary(n.detail))}</div><div class="tiny mono muted ellipsis">${esc(n.local ? "lokal (server ini)" : n.description || "")}</div></div>
         <span class="chip ${hc}">${h}</span></div>${body}
@@ -283,7 +283,7 @@ function monServers(sub) {
     <div class="mminis">${mini("cpu", "CPU", pctTxt(l.cpu), "", "var(--violet)")}${mini("mem", "RAM", pctTxt(l.mem), l.swap != null ? `swap ${pctTxt(l.swap)}` : "", "var(--blue)")}${mini("disk", "Disk /", pctTxt(l.disk), "", "var(--amber)")}${mini("rx", "Network", `↓${rate(l.rx)} ↑${rate(l.tx)}`, "", "var(--green)")}${mini("load", "Load", (l.load || 0).toFixed(2), `${d.cores || "–"} core`, "var(--orchid)")}${l.temp != null ? mini("temp", "Suhu", `${Math.round(l.temp)}°C`, l.thr ? "throttled" : "", "var(--red)") : ""}</div>
     <div class="ncols"><div><div class="lbl">Proses teratas · CPU</div>${top(d.topCPU, "cpu")}<div class="lbl" style="margin-top:14px">Proses teratas · RAM</div>${top(d.topMem, "mem")}</div>
       <div><div class="lbl">Disk</div>${disks.map((x) => `<div class="mrow"><div class="row small"><span class="mono">${esc(x.mount)}</span><span class="spacer"></span><span class="muted">${pctTxt(x.used)} dari ${Math.round(x.totalGB)} GB</span></div><div class="mbar"><i style="width:${Math.round(x.used * 100)}%;background:${barColor(x.used)}"></i></div></div>`).join("") || '<div class="tiny muted">–</div>'}
-        <div class="lbl" style="margin-top:14px">Keamanan & sistem</div>${sys.map(([k, v]) => `<div class="prow"><span>${k}</span><span></span><b>${esc(v)}</b></div>`).join("")}</div></div></div>`;
+        <div class="lbl" style="margin-top:14px">Keamanan & sistem</div>${sys.map(([k, v]) => `<div class="prow"><span>${k}</span><span></span><b>${esc(v)}</b></div>`).join("")}</div></div>${watchdogs(d)}</div>`;
   return `<div class="srvgrid ${side ? "" : "solo"}">${side}${card}</div>`;
 }
 async function drawServerSparks() {
@@ -663,6 +663,26 @@ function nodeCard(n) {
       ${services ? `<table class="tbl" style="margin-top:10px"><tr><th>Service</th><th>Status</th><th>RAM</th><th>Restart</th><th></th></tr>${services}</table>` : ""}</div></details>` : ""}
   </div>`;
 }
+// Watchdogs that report through ~/.local/state/raphael/watchdogs (status, last restart, recent history).
+function wdState(w) {
+  const now = Date.now() / 1000;
+  return now - w.checked > 600 ? ["warn", "tidak melapor"] : !w.ok ? ["bad", "bermasalah"] : w.lastRestart && now - w.lastRestart.at < 300 ? ["warn", "baru di-restart"] : ["ok", "OK"];
+}
+function watchdogs(d) {
+  const ev = { restart: "bad", pulih: "ok", menunggu: "warn" };
+  return (d.watchdogs || []).map((w) => {
+    const [cls, label] = wdState(w);
+    const hist = w.history.slice(0, 5).map((h) => `<tr><td class="small nw">${dt(h.at)}</td><td><span class="chip ${ev[h.event] || ""}">${esc(h.event)}</span></td><td class="small">${esc(h.reason)}</td></tr>`).join("");
+    return `<div class="card" style="margin:10px 0;padding:12px 14px">
+      <div class="row wrap"><span class="dot ${cls}"></span><b>${esc(w.name)}</b><span class="chip ${cls}">${label}</span>
+        ${w.url ? `<a class="small" href="${esc(w.url)}" target="_blank" rel="noopener">${esc(w.url.replace(/^https?:\/\//, ""))}</a>` : ""}
+        <span class="spacer"></span><span class="tiny muted">watchdog · cek terakhir ${ago(w.checked)}</span></div>
+      ${!w.ok && w.problem ? `<div class="small red" style="margin-top:6px">${esc(w.problem)}</div>` : ""}
+      <div class="small muted" style="margin-top:6px">${w.lastRestart ? `Restart terakhir ${dt(w.lastRestart.at)} (${ago(w.lastRestart.at)}): ${esc(w.lastRestart.reason)}` : "Belum pernah restart"} · ${w.restarts}× restart tercatat</div>
+      ${hist ? `<div class="scroll-x"><table class="tbl" style="margin-top:8px"><tr><th>Waktu</th><th>Event</th><th>Keterangan</th></tr>${hist}</table></div>` : ""}
+    </div>`;
+  }).join("");
+}
 function healthLine(n) {
   const h = n.health;
   if (!h) return "";
@@ -704,7 +724,7 @@ async function draw30() {
 }
 
 // ── Incidents ──
-const KIND = { site: "Website", node: "Server", temp: "Suhu", power: "Daya", disk: "Disk", job: "Job", ssl: "SSL", backup: "Backup", internet: "Internet", reboot: "Restart", sdcard: "Kartu SD" };
+const KIND = { site: "Website", node: "Server", temp: "Suhu", power: "Daya", disk: "Disk", job: "Job", ssl: "SSL", backup: "Backup", internet: "Internet", reboot: "Restart", sdcard: "Kartu SD", watchdog: "Watchdog" };
 async function loadIncidents(force) {
   if (!force && S.inc && Date.now() - S.inc.at < 20000) return;
   try {

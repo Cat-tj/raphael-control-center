@@ -41,8 +41,30 @@ fn emoji(kind: &str) -> &'static str {
         "internet" => "📡",
         "reboot" => "🔁",
         "sdcard" => "💽",
+        "watchdog" => "🛟",
         _ => "⚠️",
     }
+}
+
+/// A watchdog restart stays an incident this long (the service is usually back within a minute).
+const WATCHDOG_RESTART_WINDOW: f64 = 300.0;
+const WATCHDOG_STALE: f64 = 600.0;
+
+/// (title, detail) when a watchdog reports a problem, restarted its service recently or went quiet.
+pub fn watchdog_condition(w: &Value, now: f64) -> Option<(String, String)> {
+    let name = s(w, "name");
+    let checked = f(w, "checked");
+    if now - checked > WATCHDOG_STALE {
+        return Some((format!("Watchdog {name} tidak melapor"), if checked > 0.0 { format!("cek terakhir {} lalu", duration(now - checked)) } else { String::new() }));
+    }
+    let lr = w.get("lastRestart").unwrap_or(&Value::Null);
+    if f(lr, "at") > 0.0 && now - f(lr, "at") < WATCHDOG_RESTART_WINDOW {
+        return Some((format!("{name} di-restart watchdog"), s(lr, "reason").to_string()));
+    }
+    if !b(w, "ok") {
+        return Some((format!("{name} bermasalah"), s(w, "problem").to_string()));
+    }
+    None
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -89,6 +111,11 @@ pub fn conditions(nodes: &[Value], details: &Map<String, Value>, last: &Map<Stri
                 add(format!("job:{id}|{}", s(j, "id")), "job", name, format!("Job {} gagal", s(j, "name")), s(j, "detail").to_string());
             } else if h == "missed" {
                 add(format!("job:{id}|{}", s(j, "id")), "job", name, format!("Job {} tidak jalan sesuai jadwal", s(j, "name")), s(j, "scheduleText").to_string());
+            }
+        }
+        for w in arr(d, "watchdogs") {
+            if let Some((title, detail)) = watchdog_condition(w, now) {
+                add(format!("watchdog:{id}:{}", s(w, "id")), "watchdog", name, title, detail);
             }
         }
         let h = health.get(id).unwrap_or(&empty);
@@ -374,6 +401,26 @@ mod tests {
         let off = conditions(&nodes, &details, &Map::new(), &[json!({"name": "S", "url": "https://s"})], &obj(json!({"https://s": {"code": 502}})),
                              &Map::new(), &[], &Map::new(), false, base());
         assert!(off.contains_key("internet") && !off.keys().any(|k| k.starts_with("site:")));
+    }
+
+    #[test]
+    fn watchdog_conditions() {
+        let raw = json!({"id": "meet", "name": "Meet", "checked": base() - 30.0, "ok": true, "restarts": 2,
+                         "lastRestart": {"at": base() - 100.0, "reason": "UDP tidak terbuka"}, "history": vec![json!({"at": 1, "event": "restart"}); 15]});
+        let w = core::watchdog(&raw);
+        assert_eq!((w["restarts"].as_i64(), arr(&w, "history").len()), (Some(2), 10));
+        assert_eq!(watchdog_condition(&w, base()), Some(("Meet di-restart watchdog".into(), "UDP tidak terbuka".into())));
+        assert_eq!(watchdog_condition(&w, base() + 400.0), None);
+        let mut bad = w.clone();
+        bad["ok"] = json!(false);
+        bad["problem"] = json!("unit tidak aktif");
+        assert_eq!(watchdog_condition(&bad, base() + 400.0), Some(("Meet bermasalah".into(), "unit tidak aktif".into())));
+        assert_eq!(watchdog_condition(&w, base() + 1200.0).unwrap().0, "Watchdog Meet tidak melapor");
+        let mut smp = sample();
+        smp["watchdogs"] = json!([raw]);
+        let nodes = vec![json!({"id": "a", "name": "Box A"})];
+        let c = conditions(&nodes, &obj(json!({"a": core::parse(&smp, base(), None, true)})), &Map::new(), &[], &Map::new(), &Map::new(), &[], &Map::new(), true, base());
+        assert_eq!(s(&c["watchdog:a:meet"], "kind"), "watchdog");
     }
 
     #[test]
